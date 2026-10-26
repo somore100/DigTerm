@@ -4,6 +4,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./style.css";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { openAnalyze } from "./analyze.js";
 
 const term = new Terminal({
   fontFamily: "monospace",
@@ -15,6 +16,16 @@ const fit = new FitAddon();
 term.loadAddon(fit);
 term.open(document.getElementById("terminal"));
 fit.fit();
+
+// Ctrl+Shift+C copies the terminal selection (plain Ctrl+C still goes to the shell as SIGINT)
+term.attachCustomKeyEventHandler((e) => {
+  if (e.type === "keydown" && e.ctrlKey && e.shiftKey && e.code === "KeyC") {
+    const text = term.getSelection();
+    if (text) navigator.clipboard.writeText(text);
+    return false;
+  }
+  return true;
+});
 
 const linesEl = document.getElementById("lines");
 const runFileEl = document.getElementById("runfile");
@@ -37,7 +48,12 @@ await listen("pty-block", (e) => {
     copy.textContent = "Copied";
     setTimeout(() => (copy.textContent = "Copy"), 1200);
   };
-  li.append(label, copy);
+  const analyze = document.createElement("button");
+  analyze.textContent = "Analyze";
+  analyze.onclick = () => openAnalyze(b);
+  const buttons = document.createElement("span");
+  buttons.append(analyze, copy);
+  li.append(label, buttons);
   blockList.prepend(li);
 });
 await listen("pty-exit", () => {

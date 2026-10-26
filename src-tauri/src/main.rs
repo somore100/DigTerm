@@ -4,7 +4,7 @@ use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -21,6 +21,39 @@ struct Session {
 #[derive(Default)]
 struct AppState {
     session: Mutex<Option<Session>>,
+    analysis: Mutex<Option<Arc<Analysis>>>,
+}
+
+/// Line-offset index over one command's byte range of the run file.
+struct Analysis {
+    path: PathBuf,
+    starts: Vec<u64>, // absolute file offset of each line start
+    end: u64,
+}
+
+impl Analysis {
+    fn read(&self, from: usize, to: usize) -> Result<Vec<String>, String> {
+        let to = to.min(self.starts.len());
+        if from >= to {
+            return Ok(Vec::new());
+        }
+        let base = self.starts[from];
+        let stop = if to < self.starts.len() { self.starts[to] } else { self.end };
+        let mut f = File::open(&self.path).map_err(|e| e.to_string())?;
+        f.seek(SeekFrom::Start(base)).map_err(|e| e.to_string())?;
+        let mut buf = vec![0u8; (stop - base) as usize];
+        f.read_exact(&mut buf).map_err(|e| e.to_string())?;
+        let mut out = Vec::with_capacity(to - from);
+        for i in from..to {
+            let s = (self.starts[i] - base) as usize;
+            let mut e = ((if i + 1 < self.starts.len() { self.starts[i + 1] } else { self.end }) - base) as usize;
+            if e > s && buf[e - 1] == b'\n' {
+                e -= 1;
+            }
+            out.push(strip_ansi(&buf[s..e]));
+        }
+        Ok(out)
+    }
 }
 
 /// One command's output: a byte range of the run file plus its line count and exit code.
@@ -259,6 +292,65 @@ fn read_block(state: State<'_, AppState>, start: u64, end: u64) -> Result<String
     Ok(strip_ansi(&buf))
 }
 
+fn current_analysis(state: &State<'_, AppState>) -> Result<Arc<Analysis>, String> {
+    state.analysis.lock().unwrap().clone().ok_or_else(|| "no block open".to_string())
+}
+
+/// Builds the line index for a block and returns its line count.
+#[tauri::command]
+async fn analyze_open(state: State<'_, AppState>, start: u64, end: u64) -> Result<u64, String> {
+    if end < start {
+        return Err("bad range".into());
+    }
+    let path = {
+        let guard = state.session.lock().unwrap();
+        guard.as_ref().ok_or("no session")?.run_path.clone()
+    };
+    let mut f = File::open(&path).map_err(|e| e.to_string())?;
+    f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; (end - start) as usize];
+    f.read_exact(&mut buf).map_err(|e| e.to_string())?;
+    let mut starts = Vec::new();
+    if !buf.is_empty() {
+        starts.push(start);
+        for (i, &b) in buf.iter().enumerate() {
+            if b == b'\n' && i + 1 < buf.len() {
+                starts.push(start + i as u64 + 1);
+            }
+        }
+    }
+    let n = starts.len() as u64;
+    *state.analysis.lock().unwrap() = Some(Arc::new(Analysis { path, starts, end }));
+    Ok(n)
+}
+
+#[tauri::command]
+async fn analyze_lines(state: State<'_, AppState>, from: u64, count: u64) -> Result<Vec<String>, String> {
+    let a = current_analysis(&state)?;
+    a.read(from as usize, (from + count) as usize)
+}
+
+/// Returns the line numbers (0-based) containing the query, capped at 200k matches.
+#[tauri::command]
+async fn analyze_search(state: State<'_, AppState>, query: String, case_sensitive: bool) -> Result<Vec<u64>, String> {
+    let a = current_analysis(&state)?;
+    let needle = if case_sensitive { query } else { query.to_lowercase() };
+    let mut hits = Vec::new();
+    let total = a.starts.len();
+    let mut from = 0;
+    while from < total && hits.len() < 200_000 {
+        let to = (from + 20_000).min(total);
+        for (k, line) in a.read(from, to)?.iter().enumerate() {
+            let found = if case_sensitive { line.contains(&needle) } else { line.to_lowercase().contains(&needle) };
+            if found {
+                hits.push((from + k) as u64);
+            }
+        }
+        from = to;
+    }
+    Ok(hits)
+}
+
 /// Removes escape sequences and collapses carriage-return rewrites to the final text of each line.
 fn strip_ansi(bytes: &[u8]) -> String {
     let mut out = Vec::with_capacity(bytes.len());
@@ -306,7 +398,7 @@ fn strip_ansi(bytes: &[u8]) -> String {
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, read_block])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, read_block, analyze_open, analyze_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
