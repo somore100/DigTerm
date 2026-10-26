@@ -1,5 +1,13 @@
 html, body { margin: 0; height: 100%; background: #111418; color: #cfd6dd; font-family: system-ui, sans-serif; }
 body { display: flex; flex-direction: column; }
-#terminal { flex: 1; min-height: 0; padding: 6px 8px; }
+#main { flex: 1; min-height: 0; display: flex; }
+#terminal { flex: 1; min-width: 0; padding: 6px 8px; }
+#blocks { width: 260px; overflow-y: auto; background: #151a20; border-left: 1px solid #2a313a; padding: 8px; box-sizing: border-box; }
+#blocks h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.6; }
+#block-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+#block-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; font-size: 13px; background: #1a1f26; border: 1px solid #2a313a; border-radius: 6px; }
+#block-list .ok { color: #7fd1a8; }
+#block-list .fail { color: #f0a070; }
+#block-list button { font: inherit; font-size: 12px; color: inherit; background: #232a33; border: 1px solid #343d48; border-radius: 4px; padding: 2px 8px; cursor: pointer; }
 #status { display: flex; justify-content: space-between; gap: 12px; padding: 4px 10px; font-size: 12px; background: #1a1f26; border-top: 1px solid #2a313a; }
 #runfile { opacity: 0.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

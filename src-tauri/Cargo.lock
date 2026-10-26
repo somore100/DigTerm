@@ -581,6 +581,7 @@ name = "digterm"
 version = "0.0.1"
 dependencies = [
  "portable-pty",
+ "serde",
  "tauri",
  "tauri-build",
 ]

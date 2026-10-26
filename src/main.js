@@ -22,6 +22,24 @@ const runFileEl = document.getElementById("runfile");
 await listen("pty-lines", (e) => {
   linesEl.textContent = `${e.payload.toLocaleString()} lines captured`;
 });
+const blockList = document.getElementById("block-list");
+await listen("pty-block", (e) => {
+  const b = e.payload;
+  const li = document.createElement("li");
+  const label = document.createElement("span");
+  label.className = b.exit === 0 ? "ok" : "fail";
+  label.textContent = `#${b.id} · ${b.lines.toLocaleString()} lines · exit ${b.exit ?? "?"}`;
+  const copy = document.createElement("button");
+  copy.textContent = "Copy";
+  copy.onclick = async () => {
+    const text = await invoke("read_block", { start: b.start, end: b.end });
+    await navigator.clipboard.writeText(text);
+    copy.textContent = "Copied";
+    setTimeout(() => (copy.textContent = "Copy"), 1200);
+  };
+  li.append(label, copy);
+  blockList.prepend(li);
+});
 await listen("pty-exit", () => {
   term.write("\r\n[process exited]\r\n");
 });
