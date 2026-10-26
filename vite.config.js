@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   clearScreen: false,
+  build: { target: "esnext" }, // the webview is modern; top-level await is used in main.js
   server: {
     port: 1420,
     strictPort: true,
