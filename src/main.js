@@ -17,13 +17,34 @@ term.loadAddon(fit);
 term.open(document.getElementById("terminal"));
 fit.fit();
 
-// Ctrl+Shift+C copies the terminal selection (plain Ctrl+C still goes to the shell as SIGINT)
+// Font zoom: Ctrl +/-/0 and Ctrl+wheel, remembered between runs
+const TERM_FONT = 14;
+function setTermFont(px) {
+  term.options.fontSize = Math.min(32, Math.max(8, px));
+  try { localStorage.setItem("digterm.termfont", String(term.options.fontSize)); } catch {}
+  fit.fit();
+}
+try {
+  const saved = Number(localStorage.getItem("digterm.termfont"));
+  if (saved) { term.options.fontSize = saved; fit.fit(); }
+} catch {}
+document.getElementById("terminal").addEventListener("wheel", (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  setTermFont(term.options.fontSize + (e.deltaY < 0 ? 1 : -1));
+}, { passive: false });
+
 term.attachCustomKeyEventHandler((e) => {
-  if (e.type === "keydown" && e.ctrlKey && e.shiftKey && e.code === "KeyC") {
+  if (e.type !== "keydown" || !e.ctrlKey) return true;
+  // Ctrl+Shift+C copies the terminal selection (plain Ctrl+C still goes to the shell as SIGINT)
+  if (e.shiftKey && e.code === "KeyC") {
     const text = term.getSelection();
     if (text) navigator.clipboard.writeText(text);
     return false;
   }
+  if (!e.shiftKey && (e.key === "=" || e.key === "+")) { setTermFont(term.options.fontSize + 1); return false; }
+  if (!e.shiftKey && e.key === "-") { setTermFont(term.options.fontSize - 1); return false; }
+  if (!e.shiftKey && e.key === "0") { setTermFont(TERM_FONT); return false; }
   return true;
 });
 

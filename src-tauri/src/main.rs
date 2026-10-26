@@ -330,6 +330,39 @@ async fn analyze_lines(state: State<'_, AppState>, from: u64, count: u64) -> Res
     a.read(from as usize, (from + count) as usize)
 }
 
+/// Finds runs of identical consecutive lines. Returns (first_line, count) for runs of 2 or more.
+#[tauri::command]
+async fn analyze_groups(state: State<'_, AppState>) -> Result<Vec<(u64, u64)>, String> {
+    let a = current_analysis(&state)?;
+    let total = a.starts.len();
+    let mut groups = Vec::new();
+    let mut prev: Option<String> = None;
+    let mut run_start = 0usize;
+    let mut run_len = 0usize;
+    let mut from = 0;
+    while from < total {
+        let to = (from + 20_000).min(total);
+        for (k, line) in a.read(from, to)?.into_iter().enumerate() {
+            let i = from + k;
+            if prev.as_deref() == Some(line.as_str()) {
+                run_len += 1;
+            } else {
+                if run_len >= 2 {
+                    groups.push((run_start as u64, run_len as u64));
+                }
+                run_start = i;
+                run_len = 1;
+                prev = Some(line);
+            }
+        }
+        from = to;
+    }
+    if run_len >= 2 {
+        groups.push((run_start as u64, run_len as u64));
+    }
+    Ok(groups)
+}
+
 /// Returns the line numbers (0-based) containing the query, capped at 200k matches.
 #[tauri::command]
 async fn analyze_search(state: State<'_, AppState>, query: String, case_sensitive: bool) -> Result<Vec<u64>, String> {
@@ -396,9 +429,15 @@ fn strip_ansi(bytes: &[u8]) -> String {
 }
 
 fn main() {
+    // WebKitGTK can leave ghost copies of the page while the window is dragged or resized
+    // (seen on Fedora). Disabling its DMA-BUF renderer avoids that; respect an explicit user setting.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, read_block, analyze_open, analyze_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, read_block, analyze_open, analyze_lines, analyze_groups, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
