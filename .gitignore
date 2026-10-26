@@ -1,0 +1,6 @@
+# Project-local toolchains and build output (never committed or synced via git)
+.toolchain/
+node_modules/
+target/
+dist/
+src-tauri/gen/
