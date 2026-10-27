@@ -858,12 +858,18 @@ fn strip_ansi(bytes: &[u8]) -> String {
 }
 
 fn main() {
-    // WebKitGTK can leave ghost copies of the page while the window is dragged or resized
-    // (seen on Fedora). Disabling its DMA-BUF renderer avoids that; respect an explicit user setting.
+    // WebKitGTK can leave ghost copies of the page while the window is dragged or resized under
+    // native Wayland (seen on Fedora). Running through XWayland and disabling its GPU compositing
+    // avoids that. Any value you set yourself (for example GDK_BACKEND=wayland) is respected.
     #[cfg(target_os = "linux")]
-    for var in ["WEBKIT_DISABLE_DMABUF_RENDERER", "WEBKIT_DISABLE_COMPOSITING_MODE"] {
-        if std::env::var_os(var).is_none() {
-            std::env::set_var(var, "1");
+    {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("GDK_BACKEND").is_none() {
+            std::env::set_var("GDK_BACKEND", "x11");
+        }
+        for var in ["WEBKIT_DISABLE_DMABUF_RENDERER", "WEBKIT_DISABLE_COMPOSITING_MODE"] {
+            if std::env::var_os(var).is_none() {
+                std::env::set_var(var, "1");
+            }
         }
     }
     tauri::Builder::default()
