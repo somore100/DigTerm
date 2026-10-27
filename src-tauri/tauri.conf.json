@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Digterm", "width": 1000, "height": 680, "minWidth": 520, "minHeight": 340 }],
+    "windows": [{ "title": "Digterm", "width": 1000, "height": 680, "backgroundColor": "#111418", "minWidth": 520, "minHeight": 340 }],
     "security": { "csp": null }
   },
   "bundle": {

@@ -11,6 +11,7 @@ const DEFAULTS = {
   warn: "warn, warning, warnings, deprecated",
   note: "",
   font: 13,
+  wrap: true,
 };
 
 function loadSettings() {
@@ -43,7 +44,15 @@ function buildHighlighter(s) {
 }
 
 export async function openAnalyze(block) {
-  const total = await invoke("analyze_open", { session: block.session, start: block.start, end: block.end });
+  let total;
+  try {
+    if (block.importText !== undefined) total = await invoke("analyze_open_text", { text: block.importText });
+    else if (block.importPath) total = await invoke("analyze_open_file", { path: block.importPath });
+    else total = await invoke("analyze_open", { session: block.session, start: block.start, end: block.end });
+  } catch (err) {
+    alert(String(err));
+    return;
+  }
 
   const root = document.createElement("div");
   root.id = "analyze";
@@ -61,6 +70,7 @@ export async function openAnalyze(block) {
         <option value="fields">Fold repeats + word/field patterns</option>
       </select>
       <label class="an-toggle"><input type="checkbox" class="an-hl-on" /> Highlight</label>
+      <label class="an-toggle" title="Show long lines as indented sub-lines instead of scrolling sideways"><input type="checkbox" class="an-wrap" /> Wrap long lines</label>
       <button class="an-hl-edit" title="Edit highlight words">Words…</button>
       <button class="an-patterns-btn" title="Group all lines by pattern">Patterns</button>
       <button class="an-copy-sel">Copy selection</button>
@@ -101,6 +111,8 @@ export async function openAnalyze(block) {
   const patBtn = root.querySelector(".an-patterns-btn");
   const patEl = root.querySelector(".an-patterns");
   const copyAllEl = root.querySelector(".an-copy-all");
+  const wrapEl = root.querySelector(".an-wrap");
+  wrapEl.checked = settings.wrap;
 
   const cache = new Map();
   let matches = [];
@@ -115,6 +127,14 @@ export async function openAnalyze(block) {
   let wantCol = 0;
   let charW = 8;
   let moving = Promise.resolve();
+
+  // --- long lines are shown as sub-lines; rows then differ in height, tracked as "extras"
+  let lens = null; // UTF-16 length of every original line, loaded after the viewer opens
+  let wrapOn = settings.wrap;
+  let wrapW = Infinity; // characters per sub-line
+  let ex = []; // [{v, n}] view rows that take n extra visual rows, sorted by v
+  let exCum = []; // cumulative extra rows including each entry
+  let visTotal = total;
 
   // --- collapsed view model: runs of identical consecutive lines shown as one row ---
   const groupsByMode = {}; // mode -> [{first, count, summary}], loaded on first use
@@ -137,11 +157,65 @@ export async function openAnalyze(block) {
       cum.push(removed);
     }
     viewTotal = total - removed;
-    spacer.style.height = `${viewTotal * ROW}px`;
+    rebuildExtras();
     countEl.textContent = collapsed
       ? `${total.toLocaleString()} lines · ${viewTotal.toLocaleString()} after collapsing`
       : `${total.toLocaleString()} lines`;
     copyAllEl.textContent = collapsed ? "Copy all (collapsed)" : "Copy all";
+  }
+
+  function computeWrapW() {
+    wrapW = wrapOn ? Math.max(30, Math.floor((body.clientWidth - 150) / charW)) : Infinity;
+  }
+
+  function rebuildExtras() {
+    ex = [];
+    exCum = [];
+    if (wrapOn && lens && Number.isFinite(wrapW)) {
+      const list = [];
+      for (let L = 0; L < total; L++) {
+        if (lens[L] <= wrapW) continue;
+        const k = lastGroupAtOrBefore(eff, (m) => eff[m].first <= L);
+        if (k >= 0 && L < eff[k].first + eff[k].count && (L !== eff[k].first || eff[k].summary)) continue;
+        list.push({ v: viewOf(L), n: Math.ceil(lens[L] / wrapW) - 1 });
+      }
+      eff.forEach((g, k) => {
+        if (g.summary && g.summary.length > wrapW) list.push({ v: vstart[k], n: Math.ceil(g.summary.length / wrapW) - 1 });
+      });
+      list.sort((a, b) => a.v - b.v);
+      ex = list;
+    }
+    let c = 0;
+    for (const e of ex) { c += e.n; exCum.push(c); }
+    visTotal = viewTotal + c;
+    spacer.style.height = `${visTotal * ROW + 28}px`;
+  }
+
+  function extraBefore(v) {
+    const k = lastGroupAtOrBefore(ex, (m) => ex[m].v < v);
+    return k < 0 ? 0 : exCum[k];
+  }
+  const yOfV = (v) => (v + extraBefore(v)) * ROW;
+  function exN(v) {
+    const k = lastGroupAtOrBefore(ex, (m) => ex[m].v <= v);
+    return k >= 0 && ex[k].v === v ? ex[k].n : 0;
+  }
+  // which view row (and sub-line of it) is drawn at pixel height y
+  function vAtY(y) {
+    const r = Math.max(0, Math.floor(y / ROW));
+    const k = lastGroupAtOrBefore(ex, (m) => ex[m].v + exCum[m] - ex[m].n <= r);
+    if (k < 0) return { v: r, sub: 0 };
+    const start = ex[k].v + exCum[k] - ex[k].n;
+    if (r <= start + ex[k].n) return { v: ex[k].v, sub: r - start };
+    return { v: r - exCum[k], sub: 0 };
+  }
+
+  function relayoutWrap() {
+    const topLine = rowAt(vAtY(body.scrollTop).v).line;
+    computeWrapW();
+    rebuild();
+    body.scrollTop = yOfV(viewOf(topLine));
+    render();
   }
 
   function lastGroupAtOrBefore(arr, key) {
@@ -183,8 +257,8 @@ export async function openAnalyze(block) {
 
   async function render() {
     const my = ++token;
-    const first = Math.max(0, Math.floor(body.scrollTop / ROW) - 20);
-    const last = Math.min(viewTotal, Math.ceil((body.scrollTop + body.clientHeight) / ROW) + 20);
+    const first = Math.max(0, vAtY(body.scrollTop).v - 20);
+    const last = Math.min(viewTotal, vAtY(body.scrollTop + body.clientHeight).v + 21);
     const infos = [];
     for (let v = first; v < last; v++) infos.push({ ...rowAt(v), v });
 
@@ -210,9 +284,17 @@ export async function openAnalyze(block) {
       if (matches.length && hasMatchIn(r.line, end)) cls += cur >= r.line && cur <= end ? " cur" : " hit";
       if (sel && r.line <= sel[1] && end >= sel[0]) cls += " sel";
       const badge = r.count > 1 ? `<span class="rep" title="Click to expand">×${r.count.toLocaleString()}</span>` : "";
-      html += `<div class="${cls}" data-line="${r.line}" data-count="${r.count}" data-v="${r.v}"><span class="ln">${r.line + 1}</span><span class="tx">${rowHtml(t, r.v)}</span>${badge}</div>`;
+      const nSub = wrapOn && lens && Number.isFinite(wrapW) && t.length > wrapW ? Math.ceil(t.length / wrapW) : 1;
+      let inner = "";
+      for (let j = 0; j < nSub; j++) {
+        const start = nSub > 1 ? j * wrapW : 0;
+        const chunk = nSub > 1 ? t.slice(start, start + wrapW) : t;
+        const lastSub = j === nSub - 1;
+        inner += `<div class="sl${j ? " cont" : ""}" data-sub="${j}"><span class="ln">${j ? "│" : r.line + 1}</span><span class="tx">${rowHtml(chunk, r.v, start, lastSub)}</span>${lastSub ? badge : ""}</div>`;
+      }
+      html += `<div class="${cls}" data-line="${r.line}" data-count="${r.count}" data-v="${r.v}">${inner}</div>`;
     }
-    rows.style.top = `${first * ROW}px`;
+    rows.style.top = `${yOfV(first)}px`;
     rows.innerHTML = html;
   }
 
@@ -221,12 +303,20 @@ export async function openAnalyze(block) {
   }
 
   // Row text with the caret and any text selection drawn in; falls back to plain highlighted text.
-  function rowHtml(text, v) {
-    const c = caret && caret.v === v ? Math.min(caret.col, text.length) : -1;
+  // `text` is one sub-line starting at column `start` of its row; `last` marks the final sub-line.
+  function rowHtml(text, v, start = 0, last = true) {
+    let c = -1;
+    if (caret && caret.v === v) {
+      const l = caret.col - start;
+      if (l >= 0 && (l < text.length || (l === text.length && last))) c = l;
+    }
     let from = -1, to = -1;
     if (tsel && v >= tsel.a.v && v <= tsel.b.v) {
-      from = v === tsel.a.v ? Math.min(tsel.a.col, text.length) : 0;
-      to = v === tsel.b.v ? Math.min(tsel.b.col, text.length) : text.length;
+      const a = v === tsel.a.v ? tsel.a.col : 0;
+      const b = v === tsel.b.v ? tsel.b.col : Infinity;
+      const f = Math.max(0, a - start);
+      const t2 = Math.min(text.length, b - start);
+      if (t2 > f) { from = f; to = t2; }
     }
     if (c < 0 && from < 0) return segHtml(text);
     const pts = [...new Set([0, text.length, ...(c >= 0 ? [c] : []), ...(from >= 0 ? [from, to] : [])])].sort((x, y) => x - y);
@@ -273,14 +363,15 @@ export async function openAnalyze(block) {
   }
 
   function ensureVisible(v) {
-    const top = v * ROW;
+    const top = yOfV(v);
+    const h = (1 + exN(v)) * ROW;
     if (top < body.scrollTop) body.scrollTop = top;
-    else if (top + ROW > body.scrollTop + body.clientHeight) body.scrollTop = top + ROW - body.clientHeight;
+    else if (top + h > body.scrollTop + body.clientHeight) body.scrollTop = top + h - body.clientHeight;
   }
 
   // Arrow keys move the caret; at a line's end it wraps to the next or previous line.
   async function moveCaret(key, shift, ctrl) {
-    if (!caret) { caret = { v: Math.floor(body.scrollTop / ROW), col: 0 }; wantCol = 0; }
+    if (!caret) { caret = { v: vAtY(body.scrollTop).v, col: 0 }; wantCol = 0; }
     const start = { ...caret };
     let { v, col } = caret;
     const len = async (x) => (await textOfView(x)).length;
@@ -338,7 +429,7 @@ export async function openAnalyze(block) {
   function jumpTo(line) {
     caret = { v: viewOf(line), col: 0 };
     wantCol = 0;
-    body.scrollTop = Math.max(0, viewOf(line) * ROW - body.clientHeight / 2);
+    body.scrollTop = Math.max(0, yOfV(viewOf(line)) - body.clientHeight / 2);
     render();
   }
 
@@ -391,8 +482,11 @@ export async function openAnalyze(block) {
     }
     const v = Number(row.dataset.v);
     const text = textSync(v);
-    const tx = row.querySelector(".tx").getBoundingClientRect();
-    const col = Math.max(0, Math.min(text.length, Math.round((e.clientX - tx.left) / charW)));
+    const sl = e.target.closest(".sl") ?? row.querySelector(".sl");
+    const sub = Number(sl.dataset.sub || 0);
+    const tx = sl.querySelector(".tx").getBoundingClientRect();
+    const local = Math.max(0, Math.round((e.clientX - tx.left) / charW));
+    const col = Math.max(0, Math.min(text.length, (sub ? sub * wrapW : 0) + local));
     const hadCaret = !!caret;
     const before = caret ? { ...caret } : { v, col };
     caret = { v, col };
@@ -410,7 +504,7 @@ export async function openAnalyze(block) {
   });
 
   modeEl.addEventListener("change", async () => {
-    const topLine = rowAt(Math.floor(body.scrollTop / ROW)).line;
+    const topLine = rowAt(vAtY(body.scrollTop).v).line;
     const mode = modeEl.value;
     if (mode !== "off" && !groupsByMode[mode]) {
       modeEl.disabled = true;
@@ -421,8 +515,15 @@ export async function openAnalyze(block) {
     groups = collapsed ? groupsByMode[mode] : [];
     expanded = new Set();
     rebuild();
-    body.scrollTop = viewOf(topLine) * ROW;
+    body.scrollTop = yOfV(viewOf(topLine));
     render();
+  });
+
+  wrapEl.addEventListener("change", () => {
+    wrapOn = wrapEl.checked;
+    settings.wrap = wrapOn;
+    saveSettings(settings);
+    relayoutWrap();
   });
 
   // --- patterns: every line grouped by shape (numbers replaced), across the whole output
@@ -505,13 +606,14 @@ export async function openAnalyze(block) {
   root.querySelector(".an-hl-edit").onclick = () => { hlPanel.hidden = !hlPanel.hidden; };
 
   function zoom(delta) {
-    const topLine = rowAt(Math.floor(body.scrollTop / ROW)).line;
+    const topLine = rowAt(vAtY(body.scrollTop).v).line;
     settings.font = delta === 0 ? DEFAULTS.font : Math.min(32, Math.max(8, settings.font + delta));
     saveSettings(settings);
     applyFont();
     measureChar();
+    computeWrapW();
     rebuild();
-    body.scrollTop = viewOf(topLine) * ROW;
+    body.scrollTop = yOfV(viewOf(topLine));
     render();
   }
   root.addEventListener("wheel", (e) => {
@@ -520,7 +622,7 @@ export async function openAnalyze(block) {
     zoom(e.deltaY < 0 ? 1 : -1);
   }, { passive: false });
 
-  const close = () => { root.remove(); document.removeEventListener("keydown", onKey); };
+  const close = () => { resizeObs.disconnect(); root.remove(); document.removeEventListener("keydown", onKey); };
   const NAV = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
   const onKey = (e) => {
     const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
@@ -543,8 +645,23 @@ export async function openAnalyze(block) {
   document.addEventListener("keydown", onKey);
   root.querySelector(".an-close").onclick = close;
 
+  // the sub-line width follows the viewer's width
+  const resizeObs = new ResizeObserver(() => {
+    const before = wrapW;
+    computeWrapW();
+    if (before !== wrapW) relayoutWrap();
+  });
+  resizeObs.observe(body);
+
   measureChar();
+  computeWrapW();
   rebuild();
   render();
   searchEl.focus();
+  invoke("analyze_lengths")
+    .then((buf) => {
+      lens = new Uint32Array(buf);
+      relayoutWrap();
+    })
+    .catch(() => {});
 }

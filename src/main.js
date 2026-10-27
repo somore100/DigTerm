@@ -56,6 +56,8 @@ function applyTheme() {
   const t = effectiveTheme();
   document.documentElement.dataset.theme = t;
   for (const p of panes.values()) p.term.options.theme = XTERM_THEMES[t];
+  // the window's own background shows briefly while resizing, before the page repaints
+  getCurrentWindow().setBackgroundColor(t === "light" ? "#fbfbfc" : "#111418").catch(() => {});
 }
 lightQuery.addEventListener("change", () => { if (prefs.theme === "auto") applyTheme(); });
 
@@ -92,8 +94,9 @@ function fmtPath(cwd, style) {
 // ---------------------------------------------------------------- panes
 
 class Pane {
-  constructor(tab, cwd) {
+  constructor(tab, cwd, font) {
     this.tab = tab;
+    this.font = font ?? prefs.font; // zoom is per terminal
     this.id = null;
     this.cwd = cwd ?? null;
     this.lines = 0;
@@ -108,7 +111,12 @@ class Pane {
     close.textContent = "✕";
     close.title = "Close pane";
     close.onclick = (e) => { e.stopPropagation(); closePane(this); };
-    this.el.append(this.termEl, close);
+    const zoomBtn = document.createElement("button");
+    zoomBtn.className = "pane-zoom";
+    zoomBtn.textContent = "⤢";
+    zoomBtn.title = "Zoom this pane to fill the tab (Ctrl+Shift+Z)";
+    zoomBtn.onclick = (e) => { e.stopPropagation(); toggleZoomPane(this); };
+    this.el.append(this.termEl, zoomBtn, close);
 
     this.blocksEl = document.createElement("ul");
     this.blocksEl.className = "block-list";
@@ -121,7 +129,7 @@ class Pane {
 
     this.term = new Terminal({
       fontFamily: "monospace",
-      fontSize: prefs.font,
+      fontSize: this.font,
       scrollback: prefs.scrollback, // full output is kept on disk by the backend, not here
       theme: XTERM_THEMES[effectiveTheme()],
     });
@@ -143,7 +151,7 @@ class Pane {
     this.termEl.addEventListener("wheel", (e) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      setFont(prefs.font + (e.deltaY < 0 ? 1 : -1));
+      setPaneFont(this, this.font + (e.deltaY < 0 ? 1 : -1));
     }, { passive: false });
     this.el.addEventListener("mousedown", () => focusPane(this));
   }
@@ -273,8 +281,19 @@ const MIN_TILE_W = 320;
 const MIN_TILE_H = 140;
 
 function layoutTab(tab) {
+  // a zoomed pane fills the whole tab; the others stay alive but hidden
+  const zoomed = tab.zoomed && tab.panes.includes(tab.zoomed) ? tab.zoomed : null;
+  tab.zoomed = zoomed;
+  for (const p of tab.panes) p.el.style.display = zoomed && p !== zoomed ? "none" : "";
+  if (zoomed) {
+    tab.grid.style.gridTemplateColumns = "minmax(0, 1fr)";
+    tab.grid.style.gridTemplateRows = "minmax(0, 1fr)";
+    return;
+  }
   const n = Math.max(1, tab.panes.length);
-  const cols = Math.ceil(Math.sqrt(n));
+  // as many columns as fit at the minimum tile width; extra tiles wrap onto more rows
+  const maxCols = Math.max(1, Math.floor(($("stage").clientWidth || 1000) / MIN_TILE_W));
+  const cols = Math.min(Math.ceil(Math.sqrt(n)), maxCols);
   const rows = Math.ceil(n / cols);
   // tiles never shrink below a usable size; a smaller window scrolls the tab instead
   tab.grid.style.gridTemplateColumns = `repeat(${cols}, minmax(${MIN_TILE_W}px, 1fr))`;
@@ -290,6 +309,8 @@ function focusPane(pane) {
   for (const t of tabs) for (const p of t.panes) p.blocksEl.hidden = p !== pane;
   pane.term.focus();
   updateStatus();
+  const zl = document.getElementById("zoom-label");
+  if (zl) zl.textContent = zoomPercent(pane);
 }
 
 function updateStatus() {
@@ -310,8 +331,17 @@ function showToast(text) {
   toastTimer = setTimeout(() => (t.hidden = true), 2500);
 }
 
-async function addPane(tab, cwd) {
-  const pane = new Pane(tab, cwd);
+function toggleZoomPane(pane = activePane) {
+  if (!pane) return;
+  const tab = pane.tab;
+  tab.zoomed = tab.zoomed === pane ? null : pane;
+  layoutTab(tab);
+  focusPane(pane);
+  requestAnimationFrame(() => tab.panes.forEach((p) => { try { p.fit.fit(); } catch {} }));
+}
+
+async function addPane(tab, cwd, font) {
+  const pane = new Pane(tab, cwd, font);
   await pane.start();
   focusPane(pane);
   persist();
@@ -339,7 +369,7 @@ function closePane(pane) {
 
 // ---------------------------------------------------------------- tabs
 
-async function newTab(cwd) {
+async function newTab(cwd, font) {
   const el = document.createElement("div");
   el.className = "tab";
   const grid = document.createElement("div");
@@ -349,7 +379,7 @@ async function newTab(cwd) {
   const tab = { el, grid, panes: [], last: null };
   tabs.push(tab);
   selectTab(tab);
-  await addPane(tab, cwd);
+  await addPane(tab, cwd, font);
   return tab;
 }
 
@@ -469,15 +499,25 @@ $("blocks-toggle").onclick = () => setCommandsHidden(!prefs.commandsHidden);
 
 // ---------------------------------------------------------------- zoom, fullscreen
 
-function setFont(px) {
-  prefs.font = Math.min(32, Math.max(8, px));
-  savePrefs();
-  for (const p of panes.values()) {
-    p.term.options.fontSize = prefs.font;
-    try { p.fit.fit(); } catch {}
-  }
+const clampFont = (px) => Math.min(32, Math.max(8, px));
+const zoomPercent = (pane) => `${Math.round(((pane?.font ?? prefs.font) / FONT_DEFAULT) * 100)}%`;
+
+// Zoom applies to one terminal only, so other terminals are not redrawn.
+function setPaneFont(pane, px) {
+  if (!pane) return;
+  pane.font = clampFont(px);
+  pane.term.options.fontSize = pane.font;
+  try { pane.fit.fit(); } catch {}
   const label = document.getElementById("zoom-label");
-  if (label) label.textContent = `${Math.round((prefs.font / FONT_DEFAULT) * 100)}%`;
+  if (label && pane === activePane) label.textContent = zoomPercent(pane);
+  persist();
+}
+
+// the default size for new terminals (Preferences); also resets every open terminal to it
+function setDefaultFont(px) {
+  prefs.font = clampFont(px);
+  savePrefs();
+  for (const p of panes.values()) setPaneFont(p, prefs.font);
 }
 
 async function toggleFullscreen() {
@@ -491,11 +531,13 @@ const ACTIONS = [
   { id: "newTab", label: "New tab", combo: "Ctrl+Shift+T" },
   { id: "splitPane", label: "Split pane", combo: "Ctrl+Shift+D" },
   { id: "closePane", label: "Close pane or tab", combo: "Ctrl+Shift+W" },
+  { id: "zoomPane", label: "Zoom pane (toggle)", combo: "Ctrl+Shift+Z" },
   { id: "overview", label: "Show open tabs", combo: "Ctrl+Shift+O" },
   { id: "prevTab", label: "Previous tab", combo: "Ctrl+PageUp" },
   { id: "nextTab", label: "Next tab", combo: "Ctrl+PageDown" },
   { id: "copy", label: "Copy selection", combo: "Ctrl+Shift+C" },
   { id: "find", label: "Find in terminal", combo: "Ctrl+Shift+F" },
+  { id: "analyzeText", label: "Analyze pasted text", combo: "Ctrl+Shift+L" },
   { id: "commands", label: "Show or hide command list", combo: "Ctrl+Shift+B" },
   { id: "zoomIn", label: "Zoom in", combo: "Ctrl+=" },
   { id: "zoomOut", label: "Zoom out", combo: "Ctrl+-" },
@@ -534,6 +576,7 @@ function runAction(id) {
     case "newTab": newTab(activePane?.cwd); return true;
     case "splitPane": splitActive(); return true;
     case "closePane": if (activePane) closePane(activePane); return true;
+    case "zoomPane": toggleZoomPane(); return true;
     case "overview": toggleOverview(); return true;
     case "prevTab": cycleTab(-1); return true;
     case "nextTab": cycleTab(1); return true;
@@ -542,11 +585,12 @@ function runAction(id) {
       if (text && !analyzeOpen) { navigator.clipboard.writeText(text); return true; }
       return false; // nothing selected: let the key through
     }
+    case "analyzeText": showPasteDialog(); return true;
     case "commands": setCommandsHidden(!prefs.commandsHidden); return true;
     case "find": if (activePane) activePane.toggleFind(true); return true;
-    case "zoomIn": if (analyzeOpen) return false; setFont(prefs.font + 1); return true;
-    case "zoomOut": if (analyzeOpen) return false; setFont(prefs.font - 1); return true;
-    case "zoomReset": if (analyzeOpen) return false; setFont(FONT_DEFAULT); return true;
+    case "zoomIn": if (analyzeOpen) return false; setPaneFont(activePane, (activePane?.font ?? prefs.font) + 1); return true;
+    case "zoomOut": if (analyzeOpen) return false; setPaneFont(activePane, (activePane?.font ?? prefs.font) - 1); return true;
+    case "zoomReset": if (analyzeOpen) return false; setPaneFont(activePane, prefs.font); return true;
     case "fullscreen": toggleFullscreen(); return true;
     case "prefs": showPreferences(); return true;
     case "shortcuts": showShortcuts(); return true;
@@ -629,7 +673,7 @@ function showPreferences() {
 
     const font = document.createElement("input");
     font.type = "number"; font.min = 8; font.max = 32; font.value = prefs.font;
-    font.onchange = () => setFont(Number(font.value) || FONT_DEFAULT);
+    font.onchange = () => setDefaultFont(Number(font.value) || FONT_DEFAULT);
 
     const titleStyle = document.createElement("select");
     for (const [v, l] of [["folder", "Folder name (src)"], ["short", "Shortened path (~/p/L/src)"], ["full", "Full path (~/projects/Local/src)"]]) {
@@ -659,6 +703,31 @@ function showPreferences() {
     note.className = "note";
     note.textContent = "Highlight words and folding are set inside the output viewer. Keyboard shortcuts are under the menu.";
     body.append(note);
+  });
+}
+
+function showPasteDialog() {
+  openDialog("Analyze pasted text", (body) => {
+    const area = document.createElement("textarea");
+    area.placeholder = "Paste a log here (for example copied from another terminal)…";
+    area.style.cssText = "width:100%;height:300px;box-sizing:border-box;font-family:monospace;font-size:12px;color:inherit;background:var(--bg);border:1px solid var(--line2);border-radius:6px;padding:8px;resize:vertical";
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:10px";
+    const mk = (text, fn) => Object.assign(document.createElement("button"), { className: "linkbtn", textContent: text, onclick: fn });
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = "You can also drop a log file onto the window. Nothing is uploaded; it stays on this computer.";
+    row.append(
+      mk("Paste from clipboard", async () => { try { area.value = await navigator.clipboard.readText(); } catch {} }),
+      mk("Analyze", () => {
+        const text = area.value;
+        if (!text) return;
+        closeDialog();
+        openAnalyze({ label: "Pasted text", importText: text });
+      }),
+    );
+    body.append(area, row, note);
+    area.focus();
   });
 }
 
@@ -731,8 +800,8 @@ function renderMenu() {
   const zoomRow = document.createElement("div");
   zoomRow.className = "zoom-row";
   const mk = (text, fn) => Object.assign(document.createElement("button"), { textContent: text, onclick: (e) => { e.stopPropagation(); fn(); } });
-  const zl = Object.assign(document.createElement("span"), { id: "zoom-label", textContent: `${Math.round((prefs.font / FONT_DEFAULT) * 100)}%` });
-  zoomRow.append(mk("−", () => setFont(prefs.font - 1)), zl, mk("+", () => setFont(prefs.font + 1)));
+  const zl = Object.assign(document.createElement("span"), { id: "zoom-label", textContent: zoomPercent(activePane) });
+  zoomRow.append(mk("−", () => setPaneFont(activePane, (activePane?.font ?? prefs.font) - 1)), zl, mk("+", () => setPaneFont(activePane, (activePane?.font ?? prefs.font) + 1)));
   menu.append(themeRow, zoomRow, document.createElement("hr"));
 
   const item = (label, shortcutId, fn) => {
@@ -747,11 +816,13 @@ function renderMenu() {
   const sep = () => menu.append(document.createElement("hr"));
   item("New tab", "newTab", () => newTab(activePane?.cwd));
   item("Split pane", "splitPane", splitActive);
+  item("Zoom this pane", "zoomPane", () => toggleZoomPane());
   item("Show open tabs", "overview", () => toggleOverview(true));
   sep();
   item("Find in terminal", "find", () => activePane?.toggleFind(true));
   item(prefs.commandsHidden ? "Show command list" : "Hide command list", "commands", () => setCommandsHidden(!prefs.commandsHidden));
   item("Analyze full output of this terminal", null, () => analyzeFull(activePane));
+  item("Analyze pasted text…", "analyzeText", showPasteDialog);
   sep();
   item("Fullscreen", "fullscreen", toggleFullscreen);
   sep();
@@ -775,7 +846,7 @@ let lastSaved = "";
 async function persist() {
   const data = {
     active: Math.max(0, tabs.indexOf(activeTab)),
-    tabs: tabs.map((t) => ({ panes: t.panes.map((p) => p.cwd) })),
+    tabs: tabs.map((t) => ({ panes: t.panes.map((p) => ({ cwd: p.cwd, font: p.font })) })),
   };
   const json = JSON.stringify(data);
   if (json === lastSaved) return;
@@ -800,6 +871,11 @@ await listen("pty-lines", (e) => {
   p.lines = e.payload.lines;
   if (p === activePane) updateStatus();
 });
+// dropping a log file onto the window opens it in the viewer
+await listen("tauri://drag-drop", (e) => {
+  const path = e.payload?.paths?.[0];
+  if (path) openAnalyze({ label: `File: ${basename(path)}`, importPath: path });
+});
 await listen("pty-block", (e) => panes.get(e.payload.session)?.addBlock(e.payload));
 await listen("pty-exit", (e) => {
   const p = panes.get(e.payload);
@@ -808,6 +884,7 @@ await listen("pty-exit", (e) => {
 
 // ---------------------------------------------------------------- start
 
+new ResizeObserver(() => tabs.forEach(layoutTab)).observe($("stage"));
 applyTheme();
 setCommandsHidden(prefs.commandsHidden);
 try { HOME = (await invoke("home_dir")) ?? ""; } catch {}
@@ -820,9 +897,10 @@ try {
 
 if (prefs.restoreDirs && layout?.tabs?.length) {
   for (const t of layout.tabs) {
-    const dirs = t.panes?.length ? t.panes : [null];
-    const tab = await newTab(dirs[0]);
-    for (const cwd of dirs.slice(1)) await addPane(tab, cwd);
+    // entries are {cwd, font}; older saves are plain directory strings
+    const entries = (t.panes?.length ? t.panes : [null]).map((e) => (e && typeof e === "object" ? e : { cwd: e }));
+    const tab = await newTab(entries[0].cwd, entries[0].font);
+    for (const e of entries.slice(1)) await addPane(tab, e.cwd, e.font);
   }
   selectTab(tabs[Math.min(layout.active ?? 0, tabs.length - 1)]);
 } else {

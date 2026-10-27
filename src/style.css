@@ -77,6 +77,8 @@ mark.w-note { color: var(--note-fg); background: var(--note-bg); }
 .pane { position: relative; min-width: 0; min-height: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .pane.focused { border-color: var(--focus); }
 .pane-term { position: absolute; inset: 0; padding: 6px 8px; box-sizing: border-box; }
+.pane-zoom { position: absolute; top: 4px; right: 32px; z-index: 2; opacity: 0; font-size: 11px; color: inherit; background: var(--btn); border: 1px solid var(--line2); border-radius: 4px; cursor: pointer; }
+.pane:hover .pane-zoom { opacity: 0.8; }
 .pane-close { position: absolute; top: 4px; right: 6px; z-index: 2; opacity: 0; font-size: 11px; color: inherit; background: var(--btn); border: 1px solid var(--line2); border-radius: 4px; cursor: pointer; }
 .pane:hover .pane-close { opacity: 0.8; }
 #overview { position: fixed; inset: 0; z-index: 25; display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 24px; background: var(--bg3); overflow-y: auto; }
@@ -179,3 +181,12 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 .pat:hover { background: var(--hover); }
 .pc { flex-shrink: 0; min-width: 64px; text-align: right; color: var(--rep-fg); }
 .pt { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* long lines: each row holds one or more sub-lines; continuation lines are marked with a bar */
+.row { height: auto; line-height: normal; }
+.sl { height: var(--row, 18px); line-height: var(--row, 18px); white-space: pre; }
+.sl.cont .ln { opacity: 0.55; }
+.tab::-webkit-scrollbar { width: 10px; height: 10px; }
+.tab::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 5px; }
+.an-body::-webkit-scrollbar { width: 12px; height: 12px; }
+.an-body::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 6px; }

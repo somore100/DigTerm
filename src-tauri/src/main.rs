@@ -382,14 +382,9 @@ fn current_analysis(state: &State<'_, AppState>) -> Result<Arc<Analysis>, String
     state.analysis.lock().unwrap().clone().ok_or_else(|| "no block open".to_string())
 }
 
-/// Builds the line index for a block and returns its line count.
-#[tauri::command]
-async fn analyze_open(state: State<'_, AppState>, session: u32, start: u64, end: u64) -> Result<u64, String> {
-    if end < start {
-        return Err("bad range".into());
-    }
-    let path = session_path(&state, session)?;
-    let mut f = File::open(&path).map_err(|e| e.to_string())?;
+/// Line-start offsets of the byte range `start..end` of a file.
+fn index_file(path: &Path, start: u64, end: u64) -> Result<Vec<u64>, String> {
+    let mut f = File::open(path).map_err(|e| e.to_string())?;
     f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; (end - start) as usize];
     f.read_exact(&mut buf).map_err(|e| e.to_string())?;
@@ -402,9 +397,63 @@ async fn analyze_open(state: State<'_, AppState>, session: u32, start: u64, end:
             }
         }
     }
+    Ok(starts)
+}
+
+fn set_analysis(state: &State<'_, AppState>, path: PathBuf, start: u64, end: u64) -> Result<u64, String> {
+    let starts = index_file(&path, start, end)?;
     let n = starts.len() as u64;
     *state.analysis.lock().unwrap() = Some(Arc::new(Analysis { path, starts, end }));
     Ok(n)
+}
+
+/// Builds the line index for a command's output and returns its line count.
+#[tauri::command]
+async fn analyze_open(state: State<'_, AppState>, session: u32, start: u64, end: u64) -> Result<u64, String> {
+    if end < start {
+        return Err("bad range".into());
+    }
+    let path = session_path(&state, session)?;
+    set_analysis(&state, path, start, end)
+}
+
+/// Analyzes text pasted by the user (for example a log copied from another terminal).
+#[tauri::command]
+async fn analyze_open_text(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<u64, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("imports");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("last-paste.txt");
+    fs::write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
+    set_analysis(&state, path, 0, text.len() as u64)
+}
+
+/// Analyzes any text file on disk (read only), for example a log file dropped onto the window.
+#[tauri::command]
+async fn analyze_open_file(state: State<'_, AppState>, path: String) -> Result<u64, String> {
+    let path = PathBuf::from(path);
+    let len = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    if len > 1 << 30 {
+        return Err("That file is larger than 1 GiB, which the viewer can't load yet.".into());
+    }
+    set_analysis(&state, path, 0, len)
+}
+
+/// Length of every line in UTF-16 units (what JavaScript counts), as little-endian u32s.
+#[tauri::command]
+async fn analyze_lengths(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String> {
+    let a = current_analysis(&state)?;
+    let total = a.starts.len();
+    let mut out: Vec<u8> = Vec::with_capacity(total * 4);
+    let mut from = 0;
+    while from < total {
+        let to = (from + 20_000).min(total);
+        for line in a.read(from, to)? {
+            let n: usize = line.chars().map(|c| c.len_utf16()).sum();
+            out.extend_from_slice(&(n.min(u32::MAX as usize) as u32).to_le_bytes());
+        }
+        from = to;
+    }
+    Ok(tauri::ipc::Response::new(out))
 }
 
 #[tauri::command]
@@ -874,7 +923,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, read_block, analyze_open, analyze_lines, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
