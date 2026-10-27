@@ -232,7 +232,19 @@ class Pane {
     const li = document.createElement("li");
     const label = document.createElement("span");
     label.className = b.exit === 0 ? "ok" : "fail";
-    label.textContent = `#${b.id} · ${b.lines.toLocaleString()} lines · exit ${b.exit ?? "?"}`;
+    label.textContent = `#${b.id} · ${b.lines.toLocaleString()} lines · ${formatDuration(b.ms)} · exit ${b.exit ?? "?"}`;
+    const cmdText = document.createElement("span");
+    cmdText.className = "cmd-text";
+    invoke("read_block", { session: b.session, start: b.cmd_start, end: b.start })
+      .then((t) => {
+        const c = t.split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
+        cmdText.textContent = c;
+        cmdText.title = c;
+      })
+      .catch(() => {});
+    const info = document.createElement("span");
+    info.className = "block-info";
+    info.append(cmdText, label);
     const copy = document.createElement("button");
     copy.textContent = "Copy";
     const doCopy = async (mode) => {
@@ -271,7 +283,7 @@ class Pane {
     analyze.onclick = () => openAnalyze(b);
     const buttons = document.createElement("span");
     buttons.append(analyze, copy, more);
-    li.append(label, buttons);
+    li.append(info, buttons);
     this.blocksEl.prepend(li);
   }
 
@@ -280,6 +292,14 @@ class Pane {
     this.el.remove();
     this.blocksEl.remove();
   }
+}
+
+function formatDuration(ms) {
+  if (!ms || ms < 1000) return `${ms || 0} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)} s`;
+  const m = Math.floor(s / 60);
+  return `${m} m ${Math.round(s - m * 60)} s`;
 }
 
 async function analyzeFull(pane) {

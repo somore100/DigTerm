@@ -71,6 +71,8 @@ struct Block {
     end: u64,
     lines: u64,
     exit: Option<i32>,
+    /// Wall-clock time between the output starting and the command finishing.
+    ms: u64,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -89,12 +91,13 @@ struct Scanner {
     osc: Vec<u8>,
     cur: Option<(u32, u64, u64, u64)>, // id, output start, lines, command start
     b_pos: Option<u64>,
+    t0: Option<Instant>,
     next_id: u32,
 }
 
 impl Scanner {
     fn new() -> Self {
-        Scanner { st: St::Normal, esc_pos: 0, osc: Vec::new(), cur: None, b_pos: None, next_id: 1 }
+        Scanner { st: St::Normal, esc_pos: 0, osc: Vec::new(), cur: None, b_pos: None, t0: None, next_id: 1 }
     }
 
     fn feed(&mut self, chunk: &[u8], base: u64, emit: &mut impl FnMut(Block)) {
@@ -150,6 +153,7 @@ impl Scanner {
             Some(b'C') => {
                 let cmd_start = self.b_pos.take().unwrap_or(end_pos);
                 self.cur = Some((self.next_id, end_pos, 0, cmd_start));
+                self.t0 = Some(Instant::now());
                 self.next_id += 1;
             }
             Some(b'D') => {
@@ -157,7 +161,8 @@ impl Scanner {
                     let exit = std::str::from_utf8(rest.get(2..).unwrap_or(&[]))
                         .ok()
                         .and_then(|s| s.parse().ok());
-                    emit(Block { session: 0, id, cmd_start, start, end: self.esc_pos, lines, exit });
+                    let ms = self.t0.take().map_or(0, |t| t.elapsed().as_millis() as u64);
+                    emit(Block { session: 0, id, cmd_start, start, end: self.esc_pos, lines, exit, ms });
                 }
             }
             _ => {}

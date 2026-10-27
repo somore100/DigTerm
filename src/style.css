@@ -24,6 +24,9 @@ body { display: flex; flex-direction: column; }
 #blocks h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.6; }
 #block-lists .block-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 #block-lists .block-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; font-size: 13px; background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; }
+#block-lists .block-list .block-info { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+#block-lists .block-list .cmd-text { color: var(--fg); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#block-lists .block-list .cmd-text:empty { display: none; }
 #block-lists .block-list .ok { color: var(--ok); }
 #block-lists .block-list .fail { color: var(--fail); }
 #block-lists .block-list button { font: inherit; font-size: 12px; color: inherit; background: var(--btn); border: 1px solid var(--line2); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
