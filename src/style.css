@@ -148,3 +148,14 @@ mark.w-note { color: var(--note-fg); background: var(--note-bg); }
 
 #toast { position: fixed; left: 50%; bottom: 36px; transform: translateX(-50%); z-index: 50; max-width: 80vw; padding: 8px 14px; font-size: 13px; background: var(--bg2); color: var(--fg); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 6px 20px #0007; }
 #toast[hidden] { display: none; }
+
+/* menu theme circles: the id-based menu button rules would otherwise hide their colours */
+#menu .theme-btn { display: block; width: 44px; height: 44px; padding: 0; border: 2px solid var(--line2); border-radius: 50%; }
+#menu .theme-btn.active { border-color: #3584e4; }
+#menu .theme-btn:hover { border-color: #5b9bf0; }
+#menu .theme-auto { background: linear-gradient(135deg, #fbfbfc 50%, #111418 50%); }
+#menu .theme-light { background: #fbfbfc; }
+#menu .theme-dark { background: #111418; }
+.caret { display: inline-block; width: 0; height: 1.15em; margin-left: -1px; border-left: 2px solid var(--fg); vertical-align: text-bottom; animation: caret-blink 1.1s steps(1) infinite; }
+@keyframes caret-blink { 50% { opacity: 0; } }
+.tsel { background: var(--sel); }

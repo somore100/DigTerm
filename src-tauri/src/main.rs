@@ -226,9 +226,15 @@ fn pty_spawn(
     let shell_dir = data_dir.join("shell");
     fs::create_dir_all(&shell_dir).map_err(|e| e.to_string())?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+        if cfg!(windows) {
+            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
+        } else {
+            "/bin/sh".into()
+        }
+    });
     let mut cmd = shell_command(&shell, &shell_dir)?;
-    let start_dir = cwd.filter(|d| Path::new(d).is_dir()).or_else(|| std::env::var("HOME").ok());
+    let start_dir = cwd.filter(|d| Path::new(d).is_dir()).or_else(home_dir);
     if let Some(dir) = start_dir {
         cmd.cwd(dir);
     }
@@ -350,7 +356,7 @@ fn session_len(state: State<'_, AppState>, id: u32) -> Result<u64, String> {
 
 #[tauri::command]
 fn home_dir() -> Option<String> {
-    std::env::var("HOME").ok()
+    std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()
 }
 
 fn session_path(state: &State<'_, AppState>, id: u32) -> Result<PathBuf, String> {
@@ -545,11 +551,150 @@ impl Run {
     }
 }
 
+
+const MAX_VARS: usize = 3;
+const MAX_VALUES: usize = 6;
+
+/// The distinct values seen at one varying word position of a run of similar lines.
+struct Field {
+    vals: Vec<(String, u64)>,
+    other: u64,
+    all_num: bool,
+    min: Option<(i64, String)>,
+    max: Option<(i64, String)>,
+}
+
+impl Field {
+    fn new(value: &str, n: u64) -> Field {
+        let mut f = Field { vals: Vec::new(), other: 0, all_num: true, min: None, max: None };
+        f.add(value, n);
+        f
+    }
+
+    fn add(&mut self, v: &str, n: u64) {
+        match v.parse::<i64>() {
+            Ok(x) if v.len() <= 18 => {
+                if self.min.as_ref().map_or(true, |m| x < m.0) {
+                    self.min = Some((x, v.to_string()));
+                }
+                if self.max.as_ref().map_or(true, |m| x > m.0) {
+                    self.max = Some((x, v.to_string()));
+                }
+            }
+            _ => self.all_num = false,
+        }
+        if let Some(e) = self.vals.iter_mut().find(|e| e.0 == v) {
+            e.1 += n;
+        } else if self.vals.len() < MAX_VALUES {
+            self.vals.push((v.to_string(), n));
+        } else {
+            self.other += n;
+        }
+    }
+
+    fn render(&self) -> String {
+        if self.other == 0 {
+            let parts: Vec<String> = self.vals.iter().map(|(v, n)| format!("{v} ×{n}")).collect();
+            format!("⟨{}⟩", parts.join(", "))
+        } else if let (true, Some(lo), Some(hi)) = (self.all_num, &self.min, &self.max) {
+            format!("⟨{}…{}⟩", lo.1, hi.1)
+        } else {
+            let parts: Vec<String> = self.vals.iter().take(4).map(|(v, n)| format!("{v} ×{n}")).collect();
+            format!("⟨{}, +{} more lines⟩", parts.join(", "), self.other + self.vals.iter().skip(4).map(|v| v.1).sum::<u64>())
+        }
+    }
+}
+
+/// A run of consecutive lines with the same word count that differ in at most MAX_VARS positions.
+struct FieldRun {
+    first: usize,
+    count: usize,
+    base: Vec<String>,
+    fields: Vec<Option<Field>>,
+}
+
+impl FieldRun {
+    fn new(first: usize, toks: Vec<String>) -> FieldRun {
+        let fields = (0..toks.len()).map(|_| None).collect();
+        FieldRun { first, count: 1, base: toks, fields }
+    }
+
+    fn try_add(&mut self, toks: &[String]) -> bool {
+        let len = self.base.len();
+        if toks.len() != len {
+            return false;
+        }
+        let new_vars: Vec<usize> = (0..len).filter(|&i| self.fields[i].is_none() && toks[i] != self.base[i]).collect();
+        let vars = self.fields.iter().filter(|f| f.is_some()).count() + new_vars.len();
+        let constants = len - vars;
+        if vars > MAX_VARS || constants == 0 || constants * 2 < len {
+            return false;
+        }
+        for i in new_vars {
+            self.fields[i] = Some(Field::new(&self.base[i], self.count as u64));
+        }
+        for (i, f) in self.fields.iter_mut().enumerate() {
+            if let Some(f) = f {
+                f.add(&toks[i], 1);
+            }
+        }
+        self.count += 1;
+        true
+    }
+
+    fn summary(&self) -> Option<String> {
+        if self.fields.iter().all(|f| f.is_none()) {
+            return None;
+        }
+        let parts: Vec<String> = self
+            .base
+            .iter()
+            .zip(&self.fields)
+            .map(|(b, f)| f.as_ref().map_or_else(|| b.clone(), |f| f.render()))
+            .collect();
+        Some(parts.join(" "))
+    }
+}
+
+fn group_fields(a: &Analysis) -> Result<Vec<Group>, String> {
+    let total = a.starts.len();
+    let mut groups = Vec::new();
+    let mut run: Option<FieldRun> = None;
+    let mut from = 0;
+    while from < total {
+        let to = (from + 20_000).min(total);
+        for (k, line) in a.read(from, to)?.into_iter().enumerate() {
+            let toks: Vec<String> = line.split(' ').map(String::from).collect();
+            if let Some(r) = run.as_mut() {
+                if r.try_add(&toks) {
+                    continue;
+                }
+            }
+            if let Some(r) = run.take() {
+                if r.count >= 2 {
+                    groups.push(Group { first: r.first as u64, count: r.count as u64, summary: r.summary() });
+                }
+            }
+            run = Some(FieldRun::new(from + k, toks));
+        }
+        from = to;
+    }
+    if let Some(r) = run.take() {
+        if r.count >= 2 {
+            groups.push(Group { first: r.first as u64, count: r.count as u64, summary: r.summary() });
+        }
+    }
+    Ok(groups)
+}
+
 /// Finds runs of consecutive lines to fold. `mode` is "exact" (identical lines) or "numbers"
 /// (lines identical except for standalone numbers). Returns runs of 2 or more lines.
 #[tauri::command]
 async fn analyze_groups(state: State<'_, AppState>, mode: String) -> Result<Vec<Group>, String> {
     let a = current_analysis(&state)?;
+    if mode == "fields" {
+        return group_fields(&a);
+    }
     let numbers = mode == "numbers";
     let total = a.starts.len();
     let mut groups = Vec::new();

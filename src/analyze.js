@@ -58,6 +58,7 @@ export async function openAnalyze(block) {
         <option value="off">No folding</option>
         <option value="exact">Fold exact repeats</option>
         <option value="numbers">Fold repeats + number patterns</option>
+        <option value="fields">Fold repeats + word/field patterns</option>
       </select>
       <label class="an-toggle"><input type="checkbox" class="an-hl-on" /> Highlight</label>
       <button class="an-hl-edit" title="Edit highlight words">Words…</button>
@@ -105,6 +106,12 @@ export async function openAnalyze(block) {
   let anchor = null; // [firstLine, lastLine] of the clicked row
   let sel = null; // [firstLine, lastLine] original lines, inclusive
   let token = 0;
+  let caret = null; // {v, col}: keyboard caret, in view rows
+  let tpos = null; // anchor while selecting text with Shift
+  let tsel = null; // {a, b} ordered text selection
+  let wantCol = 0;
+  let charW = 8;
+  let moving = Promise.resolve();
 
   // --- collapsed view model: runs of identical consecutive lines shown as one row ---
   const groupsByMode = {}; // mode -> [{first, count, summary}], loaded on first use
@@ -176,7 +183,7 @@ export async function openAnalyze(block) {
     const first = Math.max(0, Math.floor(body.scrollTop / ROW) - 20);
     const last = Math.min(viewTotal, Math.ceil((body.scrollTop + body.clientHeight) / ROW) + 20);
     const infos = [];
-    for (let v = first; v < last; v++) infos.push(rowAt(v));
+    for (let v = first; v < last; v++) infos.push({ ...rowAt(v), v });
 
     const need = infos.filter((r) => !r.summary).map((r) => r.line).filter((l) => !cache.has(l));
     if (need.length) {
@@ -200,13 +207,134 @@ export async function openAnalyze(block) {
       if (matches.length && hasMatchIn(r.line, end)) cls += cur >= r.line && cur <= end ? " cur" : " hit";
       if (sel && r.line <= sel[1] && end >= sel[0]) cls += " sel";
       const badge = r.count > 1 ? `<span class="rep" title="Click to expand">×${r.count.toLocaleString()}</span>` : "";
-      html += `<div class="${cls}" data-line="${r.line}" data-count="${r.count}"><span class="ln">${r.line + 1}</span><span class="tx">${highlight ? highlight(esc(t)) : esc(t)}</span>${badge}</div>`;
+      html += `<div class="${cls}" data-line="${r.line}" data-count="${r.count}" data-v="${r.v}"><span class="ln">${r.line + 1}</span><span class="tx">${rowHtml(t, r.v)}</span>${badge}</div>`;
     }
     rows.style.top = `${first * ROW}px`;
     rows.innerHTML = html;
   }
 
+  function segHtml(s) {
+    return highlight ? highlight(esc(s)) : esc(s);
+  }
+
+  // Row text with the caret and any text selection drawn in; falls back to plain highlighted text.
+  function rowHtml(text, v) {
+    const c = caret && caret.v === v ? Math.min(caret.col, text.length) : -1;
+    let from = -1, to = -1;
+    if (tsel && v >= tsel.a.v && v <= tsel.b.v) {
+      from = v === tsel.a.v ? Math.min(tsel.a.col, text.length) : 0;
+      to = v === tsel.b.v ? Math.min(tsel.b.col, text.length) : text.length;
+    }
+    if (c < 0 && from < 0) return segHtml(text);
+    const pts = [...new Set([0, text.length, ...(c >= 0 ? [c] : []), ...(from >= 0 ? [from, to] : [])])].sort((x, y) => x - y);
+    let html = "";
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      if (p === c) html += '<span class="caret"></span>';
+      const q = pts[i + 1];
+      if (q === undefined) break;
+      const seg = text.slice(p, q);
+      html += from >= 0 && p >= from && q <= to ? `<span class="tsel">${segHtml(seg)}</span>` : segHtml(seg);
+    }
+    return html;
+  }
+
+  function measureChar() {
+    const probe = document.createElement("span");
+    probe.className = "tx";
+    probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+    probe.textContent = "M".repeat(100);
+    rows.append(probe);
+    charW = probe.getBoundingClientRect().width / 100 || 8;
+    probe.remove();
+  }
+
+  async function textOfView(v) {
+    const r = rowAt(v);
+    if (r.summary) return r.summary;
+    if (!cache.has(r.line)) await fetchLines(r.line, r.line + 1);
+    return cache.get(r.line) ?? "";
+  }
+
+  const textSync = (v) => {
+    const r = rowAt(v);
+    return r.summary ?? cache.get(r.line) ?? "";
+  };
+  const cmpPos = (p, q) => p.v - q.v || p.col - q.col;
+
+  function setTextSel(anchorPos) {
+    const c = cmpPos(anchorPos, caret);
+    tpos = anchorPos;
+    tsel = c === 0 ? null : c < 0 ? { a: anchorPos, b: caret } : { a: caret, b: anchorPos };
+    sel = null;
+  }
+
+  function ensureVisible(v) {
+    const top = v * ROW;
+    if (top < body.scrollTop) body.scrollTop = top;
+    else if (top + ROW > body.scrollTop + body.clientHeight) body.scrollTop = top + ROW - body.clientHeight;
+  }
+
+  // Arrow keys move the caret; at a line's end it wraps to the next or previous line.
+  async function moveCaret(key, shift, ctrl) {
+    if (!caret) { caret = { v: Math.floor(body.scrollTop / ROW), col: 0 }; wantCol = 0; }
+    const start = { ...caret };
+    let { v, col } = caret;
+    const len = async (x) => (await textOfView(x)).length;
+    const page = Math.max(1, Math.floor(body.clientHeight / ROW) - 1);
+    switch (key) {
+      case "ArrowLeft":
+        if (col > 0) col--;
+        else if (v > 0) { v--; col = await len(v); }
+        wantCol = col;
+        break;
+      case "ArrowRight": {
+        const l = await len(v);
+        if (col < l) col++;
+        else if (v < viewTotal - 1) { v++; col = 0; }
+        wantCol = col;
+        break;
+      }
+      case "ArrowUp": if (v > 0) { v--; col = Math.min(wantCol, await len(v)); } break;
+      case "ArrowDown": if (v < viewTotal - 1) { v++; col = Math.min(wantCol, await len(v)); } break;
+      case "PageUp": v = Math.max(0, v - page); col = Math.min(wantCol, await len(v)); break;
+      case "PageDown": v = Math.min(viewTotal - 1, v + page); col = Math.min(wantCol, await len(v)); break;
+      case "Home": if (ctrl) v = 0; col = 0; wantCol = 0; break;
+      case "End": if (ctrl) v = viewTotal - 1; col = await len(v); wantCol = col; break;
+    }
+    caret = { v, col };
+    if (shift) setTextSel(tpos ?? start);
+    else {
+      tpos = null;
+      tsel = null;
+      const r = rowAt(v);
+      sel = [r.line, r.line + r.count - 1];
+      anchor = sel;
+    }
+    ensureVisible(v);
+    render();
+  }
+
+  async function tselText() {
+    const { a, b } = tsel;
+    if (!collapsed) {
+      const lines = (await textFor(a.v, b.v + 1)).split("\n");
+      if (a.v === b.v) return lines[0].slice(a.col, b.col);
+      lines[0] = lines[0].slice(a.col);
+      lines[lines.length - 1] = lines[lines.length - 1].slice(0, b.col);
+      return lines.join("\n");
+    }
+    const out = [];
+    for (let v = a.v; v <= b.v; v++) {
+      const t = await textOfView(v);
+      out.push(t.slice(v === a.v ? a.col : 0, v === b.v ? b.col : t.length));
+    }
+    return out.join("\n");
+  }
+
   function jumpTo(line) {
+    caret = { v: viewOf(line), col: 0 };
+    wantCol = 0;
     body.scrollTop = Math.max(0, viewOf(line) * ROW - body.clientHeight / 2);
     render();
   }
@@ -258,9 +386,23 @@ export async function openAnalyze(block) {
       render();
       return;
     }
-    const span = [line, line + count - 1];
-    if (e.shiftKey && anchor) sel = [Math.min(anchor[0], span[0]), Math.max(anchor[1], span[1])];
-    else { anchor = span; sel = span; }
+    const v = Number(row.dataset.v);
+    const text = textSync(v);
+    const tx = row.querySelector(".tx").getBoundingClientRect();
+    const col = Math.max(0, Math.min(text.length, Math.round((e.clientX - tx.left) / charW)));
+    const hadCaret = !!caret;
+    const before = caret ? { ...caret } : { v, col };
+    caret = { v, col };
+    wantCol = col;
+    if (e.shiftKey && hadCaret) {
+      setTextSel(tpos ?? before);
+    } else {
+      tpos = null;
+      tsel = null;
+      const span = [line, line + count - 1];
+      anchor = span;
+      sel = span;
+    }
     render();
   });
 
@@ -299,7 +441,8 @@ export async function openAnalyze(block) {
     jumpTo(n);
   });
   root.querySelector(".an-copy-sel").onclick = (e) => {
-    if (sel) copyText(e.target, () => textFor(sel[0], sel[1] + 1));
+    if (tsel) copyText(e.target, tselText);
+    else if (sel) copyText(e.target, () => textFor(sel[0], sel[1] + 1));
   };
   copyAllEl.onclick = (e) => copyText(e.target, () => (collapsed ? collapsedText() : textFor(0, total)));
 
@@ -319,6 +462,7 @@ export async function openAnalyze(block) {
     settings.font = delta === 0 ? DEFAULTS.font : Math.min(32, Math.max(8, settings.font + delta));
     saveSettings(settings);
     applyFont();
+    measureChar();
     rebuild();
     body.scrollTop = viewOf(topLine) * ROW;
     render();
@@ -330,18 +474,29 @@ export async function openAnalyze(block) {
   }, { passive: false });
 
   const close = () => { root.remove(); document.removeEventListener("keydown", onKey); };
+  const NAV = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
   const onKey = (e) => {
+    const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
+    if (!typing && !e.altKey && NAV.has(e.key) && (!e.ctrlKey || e.key === "Home" || e.key === "End")) {
+      e.preventDefault();
+      moving = moving.then(() => moveCaret(e.key, e.shiftKey, e.ctrlKey));
+    }
+    if (!typing && e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "c" && tsel && !window.getSelection().toString()) {
+      copyText(root.querySelector(".an-copy-sel"), tselText);
+    }
     if (e.key === "Escape") close();
     if (e.ctrlKey && !e.shiftKey && (e.key === "=" || e.key === "+")) { e.preventDefault(); zoom(1); }
     if (e.ctrlKey && !e.shiftKey && e.key === "-") { e.preventDefault(); zoom(-1); }
     if (e.ctrlKey && !e.shiftKey && e.key === "0") { e.preventDefault(); zoom(0); }
-    if (e.ctrlKey && e.shiftKey && e.code === "KeyC" && sel && !window.getSelection().toString()) {
-      copyText(root.querySelector(".an-copy-sel"), () => textFor(sel[0], sel[1] + 1));
+    if (e.ctrlKey && e.shiftKey && e.code === "KeyC" && !window.getSelection().toString()) {
+      if (tsel) copyText(root.querySelector(".an-copy-sel"), tselText);
+      else if (sel) copyText(root.querySelector(".an-copy-sel"), () => textFor(sel[0], sel[1] + 1));
     }
   };
   document.addEventListener("keydown", onKey);
   root.querySelector(".an-close").onclick = close;
 
+  measureChar();
   rebuild();
   render();
   searchEl.focus();

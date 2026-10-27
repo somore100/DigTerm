@@ -1,0 +1,58 @@
+name: Release builds
+
+# Builds installers for Linux (.deb, .rpm, .AppImage), Windows (.exe installer, .msi) and macOS (.dmg).
+# Run it by hand from the Actions tab, or push a tag such as v0.1.0.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            args: ""
+          - os: windows-latest
+            args: ""
+          - os: macos-latest # Apple silicon
+            args: "--target aarch64-apple-darwin"
+            rust_target: aarch64-apple-darwin
+          - os: macos-13 # Intel
+            args: "--target x86_64-apple-darwin"
+            rust_target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system packages
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Digterm ${{ github.ref_name }}"
+          releaseBody: "Early development build. Not code-signed."
+          releaseDraft: true
+          prerelease: true
+          args: ${{ matrix.args }}
