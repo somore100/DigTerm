@@ -1,6 +1,9 @@
 name: Release builds
 
-# Builds installers for Linux (.deb, .rpm, .AppImage), Windows (.exe installer, .msi) and macOS (.dmg).
+# Builds installers for every platform and attaches them to a DRAFT release for you to review:
+#   Linux    .deb (Debian/Ubuntu), .rpm (Fedora), .AppImage  - x86-64, plus arm64 (experimental)
+#   Windows  .exe installer, .msi                            - x86-64, plus arm64 (experimental)
+#   macOS    .dmg                                            - Apple silicon and Intel
 # Run it by hand from the Actions tab, or push a tag such as v0.1.0.
 on:
   workflow_dispatch:
@@ -12,20 +15,19 @@ permissions:
 
 jobs:
   build:
+    name: ${{ matrix.name }}
+    # experimental builds may fail without stopping the others
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            args: ""
-          - os: windows-latest
-            args: ""
-          - os: macos-latest # Apple silicon
-            args: "--target aarch64-apple-darwin"
-            rust_target: aarch64-apple-darwin
-          - os: macos-13 # Intel
-            args: "--target x86_64-apple-darwin"
-            rust_target: x86_64-apple-darwin
+          - { name: "Linux x86-64", os: ubuntu-22.04, args: "", rust_target: "", experimental: false }
+          - { name: "Windows x86-64", os: windows-latest, args: "", rust_target: "", experimental: false }
+          - { name: "macOS Apple silicon", os: macos-latest, args: "--target aarch64-apple-darwin", rust_target: aarch64-apple-darwin, experimental: false }
+          - { name: "macOS Intel", os: macos-15-intel, args: "--target x86_64-apple-darwin", rust_target: x86_64-apple-darwin, experimental: false }
+          - { name: "Linux arm64 (experimental)", os: ubuntu-22.04-arm, args: "", rust_target: "", experimental: true }
+          - { name: "Windows arm64 (experimental)", os: windows-11-arm, args: "--target aarch64-pc-windows-msvc", rust_target: aarch64-pc-windows-msvc, experimental: true }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +54,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Digterm ${{ github.ref_name }}"
-          releaseBody: "Early development build. Not code-signed."
+          releaseBody: "Early development build. Not code-signed, so Windows and macOS will show a security warning."
           releaseDraft: true
           prerelease: true
           args: ${{ matrix.args }}

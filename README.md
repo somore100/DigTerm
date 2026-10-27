@@ -9,6 +9,21 @@ open any command's output in a viewer built for very large outputs.
 > **Status:** early development (pre-0.1). Linux is the primary platform. Windows and macOS builds are
 > produced by CI but are not finished yet (see [Platform support](#platform-support)). Not yet code-signed.
 
+## Why Digterm?
+
+- **Nothing is lost.** Every byte a command prints is saved to disk, so a long build or a noisy log never scrolls out of
+  reach, and any command's output can be reopened later.
+- **Built to be understood, not just displayed.** Search, jump to a line, fold the thousands of repeated lines, and see
+  which messages are the same kind (`item ⟨1…5000⟩`, `user ⟨alice ×50, bob ×50⟩ failed to log in`) instead of
+  scrolling through them.
+- **Never rewrites your output.** Folding, wrapping and highlighting only change what you see. Copy gives you the
+  original text, or the folded version if you ask for it, and the saved output stays untouched.
+- **Still a normal terminal.** Your shell, your tools, `vim` and `ssh` all work. The extra features appear only when you
+  ask for them (Analyze, Patterns, Find), so nothing gets in the way.
+- **Works with logs from anywhere.** Paste a log copied from another terminal, or drop a log file onto the window.
+- **Private and offline.** No account, no network access, no telemetry. Your output never leaves your computer.
+- **Open source.** MIT licensed, and built on open components.
+
 ## Features
 
 **Terminal**
@@ -68,7 +83,15 @@ Run files are stored in the app data folder (on Linux, `~/.local/share/dev.digte
 ## Install
 
 Pre-built packages are published on the [Releases](https://github.com/somore100/DigTerm/releases) page when a version
-is tagged: `.rpm` and `.deb` and AppImage (Linux), `.exe` and `.msi` (Windows), `.dmg` (macOS).
+is tagged:
+
+| Platform | Packages |
+|---|---|
+| Linux (x86-64, arm64 experimental) | `.rpm` (Fedora, openSUSE), `.deb` (Debian, Ubuntu), `.AppImage` (any distribution) |
+| Windows (x86-64, arm64 experimental) | `.exe` installer, `.msi` |
+| macOS (Apple silicon and Intel) | `.dmg` |
+
+The builds are not code-signed yet, so Windows SmartScreen and macOS Gatekeeper will warn before the first start.
 
 ## Build from source
 
