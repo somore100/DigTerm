@@ -687,6 +687,68 @@ fn group_fields(a: &Analysis) -> Result<Vec<Group>, String> {
     Ok(groups)
 }
 
+#[derive(Serialize)]
+struct Pattern {
+    template: String,
+    count: u64,
+    first: u64,
+    last: u64,
+}
+
+/// A line with its standalone numbers replaced by `#`; lines with the same result share a pattern.
+fn pattern_of(line: &str) -> String {
+    shape_key(&tokenize(line)).replace('\u{1}', "#")
+}
+
+/// Groups every line of the output by pattern (not just neighbours), most frequent first.
+#[tauri::command]
+async fn analyze_patterns(state: State<'_, AppState>) -> Result<Vec<Pattern>, String> {
+    let a = current_analysis(&state)?;
+    let total = a.starts.len();
+    let mut map: HashMap<String, (u64, u64, u64)> = HashMap::new();
+    let mut from = 0;
+    while from < total {
+        let to = (from + 20_000).min(total);
+        for (k, line) in a.read(from, to)?.iter().enumerate() {
+            let key = pattern_of(line);
+            let i = (from + k) as u64;
+            if let Some(e) = map.get_mut(&key) {
+                e.0 += 1;
+                e.2 = i;
+            } else if map.len() < 200_000 {
+                map.insert(key, (1, i, i));
+            }
+        }
+        from = to;
+    }
+    let mut v: Vec<Pattern> = map
+        .into_iter()
+        .map(|(template, (count, first, last))| Pattern { template, count, first, last })
+        .collect();
+    v.sort_by(|a, b| b.count.cmp(&a.count).then(a.first.cmp(&b.first)));
+    v.truncate(1000);
+    Ok(v)
+}
+
+/// Line numbers (0-based) belonging to one pattern, capped at 200k.
+#[tauri::command]
+async fn analyze_pattern_lines(state: State<'_, AppState>, template: String) -> Result<Vec<u64>, String> {
+    let a = current_analysis(&state)?;
+    let total = a.starts.len();
+    let mut hits = Vec::new();
+    let mut from = 0;
+    while from < total && hits.len() < 200_000 {
+        let to = (from + 20_000).min(total);
+        for (k, line) in a.read(from, to)?.iter().enumerate() {
+            if pattern_of(line) == template {
+                hits.push((from + k) as u64);
+            }
+        }
+        from = to;
+    }
+    Ok(hits)
+}
+
 /// Finds runs of consecutive lines to fold. `mode` is "exact" (identical lines) or "numbers"
 /// (lines identical except for standalone numbers). Returns runs of 2 or more lines.
 #[tauri::command]
@@ -806,7 +868,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, read_block, analyze_open, analyze_lines, analyze_groups, analyze_search])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, read_block, analyze_open, analyze_lines, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }

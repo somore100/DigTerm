@@ -165,3 +165,17 @@ html, body { user-select: none; -webkit-user-select: none; cursor: default; }
 input, textarea, select, .xterm, .row .tx, #runfile, .dialog .note { user-select: text; -webkit-user-select: text; }
 button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 .an-body { cursor: text; }
+
+/* tiles keep a minimum size; the tab scrolls when the window is smaller */
+.tab { overflow: auto; }
+/* viewer toolbar wraps instead of hiding buttons in narrow windows */
+.an-bar { flex-wrap: wrap; row-gap: 6px; }
+.an-bar .an-search { flex: 1 1 150px; }
+.an-main { flex: 1; display: flex; min-height: 0; }
+.an-patterns { width: min(400px, 42vw); flex-shrink: 0; overflow: auto; padding: 6px; font-family: monospace; font-size: 12px; background: var(--bg3); border-left: 1px solid var(--line); }
+.an-patterns[hidden] { display: none; }
+.pat-head { padding: 4px 6px 8px; opacity: 0.6; font-family: system-ui, sans-serif; }
+.pat { display: flex; gap: 8px; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+.pat:hover { background: var(--hover); }
+.pc { flex-shrink: 0; min-width: 64px; text-align: right; color: var(--rep-fg); }
+.pt { white-space: pre-wrap; overflow-wrap: anywhere; }

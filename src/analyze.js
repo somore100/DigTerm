@@ -62,6 +62,7 @@ export async function openAnalyze(block) {
       </select>
       <label class="an-toggle"><input type="checkbox" class="an-hl-on" /> Highlight</label>
       <button class="an-hl-edit" title="Edit highlight words">Words…</button>
+      <button class="an-patterns-btn" title="Group all lines by pattern">Patterns</button>
       <button class="an-copy-sel">Copy selection</button>
       <button class="an-copy-all">Copy all</button>
       <button class="an-close">Close</button>
@@ -72,7 +73,7 @@ export async function openAnalyze(block) {
       <label>Your words <input class="hl-note" placeholder="e.g. timeout, retry" /></label>
       <span class="an-hint">comma-separated, whole words, not case sensitive · Ctrl +/− zooms</span>
     </div>
-    <div class="an-body"><div class="an-spacer"></div><div class="an-rows"></div></div>`;
+    <div class="an-main"><div class="an-body"><div class="an-spacer"></div><div class="an-rows"></div></div><aside class="an-patterns" hidden></aside></div>`;
   document.body.append(root);
 
   const settings = loadSettings();
@@ -97,6 +98,8 @@ export async function openAnalyze(block) {
   const gotoEl = root.querySelector(".an-goto");
   const countEl = root.querySelector(".an-count");
   const modeEl = root.querySelector(".an-mode");
+  const patBtn = root.querySelector(".an-patterns-btn");
+  const patEl = root.querySelector(".an-patterns");
   const copyAllEl = root.querySelector(".an-copy-all");
 
   const cache = new Map();
@@ -420,6 +423,50 @@ export async function openAnalyze(block) {
     rebuild();
     body.scrollTop = viewOf(topLine) * ROW;
     render();
+  });
+
+  // --- patterns: every line grouped by shape (numbers replaced), across the whole output
+  let patterns = null;
+  function renderPatterns() {
+    patEl.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "pat-head";
+    head.textContent = `${patterns.length.toLocaleString()} patterns · click one to step through its lines`;
+    patEl.append(head);
+    patterns.forEach((p, i) => {
+      const row = document.createElement("div");
+      row.className = "pat";
+      row.dataset.i = i;
+      const count = document.createElement("span");
+      count.className = "pc";
+      count.textContent = `${p.count.toLocaleString()}×`;
+      const tmpl = document.createElement("span");
+      tmpl.className = "pt";
+      const shown = p.template === "" ? "(empty line)" : p.template.replace(/#/g, "⟨#⟩");
+      tmpl.innerHTML = segHtml(shown);
+      row.title = `first at line ${p.first + 1}, last at line ${p.last + 1}`;
+      row.append(count, tmpl);
+      patEl.append(row);
+    });
+  }
+  patBtn.onclick = async () => {
+    patEl.hidden = !patEl.hidden;
+    if (!patEl.hidden && !patterns) {
+      patEl.textContent = "Scanning…";
+      patterns = await invoke("analyze_patterns");
+      renderPatterns();
+    }
+  };
+  patEl.addEventListener("click", async (e) => {
+    const row = e.target.closest(".pat");
+    if (!row) return;
+    const p = patterns[Number(row.dataset.i)];
+    matches = await invoke("analyze_pattern_lines", { template: p.template });
+    matchIdx = -1;
+    lastQuery = null;
+    searchEl.value = "";
+    if (!matches.length) { matchesEl.textContent = "no lines"; render(); return; }
+    step(1);
   });
 
   searchEl.addEventListener("keydown", async (e) => {

@@ -269,12 +269,16 @@ async function analyzeFull(pane) {
   if (end > 0) openAnalyze({ session: pane.id, id: "all", label: "Full output of this terminal", start: 0, end });
 }
 
+const MIN_TILE_W = 320;
+const MIN_TILE_H = 140;
+
 function layoutTab(tab) {
   const n = Math.max(1, tab.panes.length);
   const cols = Math.ceil(Math.sqrt(n));
   const rows = Math.ceil(n / cols);
-  tab.grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
-  tab.grid.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
+  // tiles never shrink below a usable size; a smaller window scrolls the tab instead
+  tab.grid.style.gridTemplateColumns = `repeat(${cols}, minmax(${MIN_TILE_W}px, 1fr))`;
+  tab.grid.style.gridTemplateRows = `repeat(${rows}, minmax(${MIN_TILE_H}px, 1fr))`;
 }
 
 function focusPane(pane) {
@@ -293,19 +297,8 @@ function updateStatus() {
   $("runfile").textContent = activePane?.runFile ?? "";
 }
 
-// A user-initiated split is refused when the new tiles would be too small to use.
 function splitActive() {
-  if (!activeTab) return;
-  const n = activeTab.panes.length + 1;
-  const cols = Math.ceil(Math.sqrt(n));
-  const rows = Math.ceil(n / cols);
-  const w = $("stage").clientWidth / cols;
-  const h = $("stage").clientHeight / rows;
-  if (w < 320 || h < 140) {
-    showToast("Not enough room to split. Enlarge the window or close a pane.");
-    return;
-  }
-  addPane(activeTab, activePane?.cwd);
+  if (activeTab) addPane(activeTab, activePane?.cwd);
 }
 
 let toastTimer = null;
