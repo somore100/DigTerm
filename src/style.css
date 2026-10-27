@@ -129,3 +129,8 @@ mark.w-note { color: var(--note-fg); background: var(--note-bg); }
 #blocks-toggle:hover { opacity: 1; background: var(--btn); }
 #main.cmd-hidden #blocks { display: none; }
 #main.cmd-hidden #blocks-toggle { right: 0; }
+
+.block-list li { position: relative; }
+.copy-pop { position: absolute; top: 100%; right: 0; z-index: 8; display: flex; flex-direction: column; min-width: 190px; padding: 4px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 6px 20px #0007; }
+.copy-pop button { text-align: left; padding: 5px 8px !important; border: none !important; background: transparent !important; }
+.copy-pop button:hover { background: var(--hover) !important; }

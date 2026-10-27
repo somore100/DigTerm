@@ -20,6 +20,7 @@ const PREF_DEFAULTS = {
   tabTitle: "folder", // folder | short | full
   scrollback: 5000,
   commandsHidden: false,
+  copyMode: "output", // output | command
   keys: {}, // action id -> combo overrides
 };
 
@@ -133,7 +134,11 @@ class Pane {
     this.buildFindBar();
 
     this.term.onData((data) => { if (this.id !== null) invoke("pty_write", { id: this.id, data }); });
-    this.term.onResize(({ rows, cols }) => { if (this.id !== null) invoke("pty_resize", { id: this.id, rows, cols }); });
+    // debounced: the shell redraws its prompt on every size change, so only send the settled size
+    this.term.onResize(({ rows, cols }) => {
+      clearTimeout(this.resizeTimer);
+      this.resizeTimer = setTimeout(() => { if (this.id !== null) invoke("pty_resize", { id: this.id, rows, cols }); }, 150);
+    });
     new ResizeObserver(() => { try { this.fit.fit(); } catch {} }).observe(this.termEl);
     this.termEl.addEventListener("wheel", (e) => {
       if (!e.ctrlKey) return;
@@ -211,17 +216,42 @@ class Pane {
     label.textContent = `#${b.id} · ${b.lines.toLocaleString()} lines · exit ${b.exit ?? "?"}`;
     const copy = document.createElement("button");
     copy.textContent = "Copy";
-    copy.onclick = async () => {
-      const text = await invoke("read_block", { session: b.session, start: b.start, end: b.end });
-      await navigator.clipboard.writeText(text);
+    const doCopy = async (mode) => {
+      const start = mode === "command" ? b.cmd_start : b.start;
+      const text = await invoke("read_block", { session: b.session, start, end: b.end });
+      await navigator.clipboard.writeText(text.trimEnd());
       copy.textContent = "Copied";
       setTimeout(() => (copy.textContent = "Copy"), 1200);
+    };
+    copy.onclick = () => doCopy(prefs.copyMode);
+    copy.title = prefs.copyMode === "command" ? "Copy command and output" : "Copy output only";
+    const more = document.createElement("button");
+    more.textContent = "▾";
+    more.title = "Copy options";
+    more.onclick = (e) => {
+      e.stopPropagation();
+      document.querySelectorAll(".copy-pop").forEach((n) => n.remove());
+      const pop = document.createElement("div");
+      pop.className = "copy-pop";
+      for (const [mode, label] of [["output", "Copy output only"], ["command", "Copy command + output"]]) {
+        const item = document.createElement("button");
+        item.textContent = (prefs.copyMode === mode ? "✓ " : "") + label;
+        item.onclick = () => {
+          prefs.copyMode = mode;
+          savePrefs();
+          copy.title = mode === "command" ? "Copy command and output" : "Copy output only";
+          pop.remove();
+          doCopy(mode);
+        };
+        pop.append(item);
+      }
+      li.append(pop);
     };
     const analyze = document.createElement("button");
     analyze.textContent = "Analyze";
     analyze.onclick = () => openAnalyze(b);
     const buttons = document.createElement("span");
-    buttons.append(analyze, copy);
+    buttons.append(analyze, copy, more);
     li.append(label, buttons);
     this.blocksEl.prepend(li);
   }
@@ -714,7 +744,10 @@ function renderMenu() {
 }
 
 $("menu-btn").onclick = (e) => { e.stopPropagation(); if (menu.hidden) renderMenu(); menu.hidden = !menu.hidden; };
-document.addEventListener("click", (e) => { if (!menu.contains(e.target)) menu.hidden = true; });
+document.addEventListener("click", (e) => {
+  if (!menu.contains(e.target)) menu.hidden = true;
+  document.querySelectorAll(".copy-pop").forEach((n) => n.remove());
+});
 $("new-tab").onclick = () => newTab(activePane?.cwd);
 $("split-btn").onclick = () => { if (activeTab) addPane(activeTab, activePane?.cwd); };
 $("overview-btn").onclick = () => toggleOverview();

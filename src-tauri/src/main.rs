@@ -65,6 +65,8 @@ impl Analysis {
 struct Block {
     session: u32,
     id: u32,
+    /// Where the typed command begins (after the prompt); `start..end` is the output alone.
+    cmd_start: u64,
     start: u64,
     end: u64,
     lines: u64,
@@ -85,13 +87,14 @@ struct Scanner {
     st: St,
     esc_pos: u64,
     osc: Vec<u8>,
-    cur: Option<(u32, u64, u64)>, // id, start offset, lines
+    cur: Option<(u32, u64, u64, u64)>, // id, output start, lines, command start
+    b_pos: Option<u64>,
     next_id: u32,
 }
 
 impl Scanner {
     fn new() -> Self {
-        Scanner { st: St::Normal, esc_pos: 0, osc: Vec::new(), cur: None, next_id: 1 }
+        Scanner { st: St::Normal, esc_pos: 0, osc: Vec::new(), cur: None, b_pos: None, next_id: 1 }
     }
 
     fn feed(&mut self, chunk: &[u8], base: u64, emit: &mut impl FnMut(Block)) {
@@ -143,16 +146,18 @@ impl Scanner {
     fn finish(&mut self, end_pos: u64, emit: &mut impl FnMut(Block)) {
         let Some(rest) = self.osc.strip_prefix(b"133;") else { return };
         match rest.first() {
+            Some(b'B') => self.b_pos = Some(end_pos),
             Some(b'C') => {
-                self.cur = Some((self.next_id, end_pos, 0));
+                let cmd_start = self.b_pos.take().unwrap_or(end_pos);
+                self.cur = Some((self.next_id, end_pos, 0, cmd_start));
                 self.next_id += 1;
             }
             Some(b'D') => {
-                if let Some((id, start, lines)) = self.cur.take() {
+                if let Some((id, start, lines, cmd_start)) = self.cur.take() {
                     let exit = std::str::from_utf8(rest.get(2..).unwrap_or(&[]))
                         .ok()
                         .and_then(|s| s.parse().ok());
-                    emit(Block { session: 0, id, start, end: self.esc_pos, lines, exit });
+                    emit(Block { session: 0, id, cmd_start, start, end: self.esc_pos, lines, exit });
                 }
             }
             _ => {}
@@ -649,8 +654,10 @@ fn main() {
     // WebKitGTK can leave ghost copies of the page while the window is dragged or resized
     // (seen on Fedora). Disabling its DMA-BUF renderer avoids that; respect an explicit user setting.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    for var in ["WEBKIT_DISABLE_DMABUF_RENDERER", "WEBKIT_DISABLE_COMPOSITING_MODE"] {
+        if std::env::var_os(var).is_none() {
+            std::env::set_var(var, "1");
+        }
     }
     tauri::Builder::default()
         .manage(AppState::default())
