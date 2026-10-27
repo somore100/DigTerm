@@ -804,7 +804,7 @@ function showPreferences() {
       }
       clean.armed = false;
       clean.textContent = "Delete older than that now";
-      try { const [n, b] = await invoke("cleanup_runs", { days: d }); usage.textContent = `Deleted ${n} files (${fmtBytes(b)})`; } catch (e) { usage.textContent = String(e); }
+      try { const [n, b] = await invoke("cleanup_runs", { days: d }); usage.textContent = n ? `Done: removed ${n} files, freed ${fmtBytes(b)}` : "Nothing to remove"; setTimeout(showUsage, 2500); } catch (e) { usage.textContent = String(e); }
     };
     const cleanRow = document.createElement("span");
     cleanRow.append(clean, " ", usage);
