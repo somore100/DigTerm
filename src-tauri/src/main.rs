@@ -352,6 +352,52 @@ fn load_layout(app: AppHandle) -> Result<Option<String>, String> {
     Ok(fs::read_to_string(dir.join("layout.json")).ok())
 }
 
+/// Saved output files (`run-*.raw`) as (path, size, age in seconds).
+fn run_files(app: &AppHandle) -> Result<Vec<(PathBuf, u64, u64)>, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("runs");
+    let Ok(rd) = fs::read_dir(dir) else { return Ok(Vec::new()) };
+    let now = SystemTime::now();
+    let mut out = Vec::new();
+    for entry in rd.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("run-") && name.ends_with(".raw")) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let age = meta.modified().ok().and_then(|m| now.duration_since(m).ok()).map_or(0, |d| d.as_secs());
+        out.push((path, meta.len(), age));
+    }
+    Ok(out)
+}
+
+/// How many saved output files there are and their total size in bytes.
+#[tauri::command]
+fn runs_usage(app: AppHandle) -> Result<(u64, u64), String> {
+    let files = run_files(&app)?;
+    Ok((files.len() as u64, files.iter().map(|f| f.1).sum()))
+}
+
+/// Deletes saved output files not modified for `days` days (0 = all of them). Files of open
+/// terminals are never touched. Returns (files deleted, bytes freed).
+#[tauri::command]
+fn cleanup_runs(app: AppHandle, state: State<'_, AppState>, days: u64) -> Result<(u64, u64), String> {
+    let live: Vec<PathBuf> = state.sessions.lock().unwrap().values().map(|s| s.run_path.clone()).collect();
+    let limit = days.saturating_mul(86_400);
+    let (mut n, mut bytes) = (0u64, 0u64);
+    for (path, size, age) in run_files(&app)? {
+        if live.contains(&path) || (days > 0 && age < limit) {
+            continue;
+        }
+        if fs::remove_file(&path).is_ok() {
+            n += 1;
+            bytes += size;
+        }
+    }
+    Ok((n, bytes))
+}
+
 /// Size in bytes of a session's run file (for analysing its full output).
 #[tauri::command]
 fn session_len(state: State<'_, AppState>, id: u32) -> Result<u64, String> {
@@ -928,7 +974,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }

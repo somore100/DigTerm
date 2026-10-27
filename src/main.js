@@ -22,6 +22,7 @@ const PREF_DEFAULTS = {
   commandsHidden: false,
   autoSize: false, // smaller text when there are more terminals in a tab
   copyMode: "output", // output | command
+  cleanupDays: 0, // delete saved output older than this many days on start; 0 = never
   keys: {}, // action id -> combo overrides
 };
 
@@ -780,12 +781,40 @@ function showPreferences() {
       for (const p of panes.values()) p.term.options.scrollback = prefs.scrollback;
     };
 
+    const fmtBytes = (n) => (n < 1048576 ? `${Math.round(n / 1024)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
+    const days = document.createElement("input");
+    days.type = "number"; days.min = 0; days.max = 3650; days.value = prefs.cleanupDays;
+    days.onchange = () => { prefs.cleanupDays = Math.min(3650, Math.max(0, Math.floor(Number(days.value)) || 0)); savePrefs(); };
+    const usage = document.createElement("span");
+    const showUsage = async () => {
+      try { const [n, b] = await invoke("runs_usage"); usage.textContent = `${n} files, ${fmtBytes(b)}`; } catch {}
+    };
+    showUsage();
+    const clean = document.createElement("button");
+    clean.textContent = "Delete older than that now";
+    clean.title = "Deletes saved output of closed terminals (all of it when the number of days is 0)";
+    clean.onclick = async () => {
+      const d = Math.floor(Number(days.value)) || 0;
+      if (!clean.armed) { // second click confirms; native confirm() is not relied on in the webview
+        clean.armed = true;
+        clean.textContent = d > 0 ? `Click again: delete older than ${d} days` : "Click again: delete ALL closed output";
+        setTimeout(() => { clean.armed = false; clean.textContent = "Delete older than that now"; }, 4000);
+        return;
+      }
+      clean.armed = false;
+      clean.textContent = "Delete older than that now";
+      try { const [n, b] = await invoke("cleanup_runs", { days: d }); usage.textContent = `Deleted ${n} files (${fmtBytes(b)})`; } catch (e) { usage.textContent = String(e); }
+    };
+    const cleanRow = document.createElement("span");
+    cleanRow.append(clean, " ", usage);
+
     body.append(
       heading("Appearance"), opt("Theme", theme), opt("Font size", font),
       opt("Smaller text when a tab has more terminals", auto),
       heading("Tabs"), opt("Tab title", titleStyle),
       heading("Startup"), opt("Restore directories on start", restore),
       heading("Terminal"), opt("Scrollback lines (full output is always saved to disk)", scroll),
+      heading("Saved output"), opt("Delete saved output older than (days, 0 = never)", days), opt("Disk used", cleanRow),
     );
     const note = document.createElement("div");
     note.className = "note";
@@ -981,6 +1010,8 @@ await listen("pty-exit", (e) => {
 });
 
 // ---------------------------------------------------------------- start
+
+if (prefs.cleanupDays > 0) invoke("cleanup_runs", { days: prefs.cleanupDays }).catch(() => {});
 
 new ResizeObserver(() => tabs.forEach(layoutTab)).observe($("stage"));
 applyTheme();
