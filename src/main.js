@@ -293,6 +293,30 @@ function updateStatus() {
   $("runfile").textContent = activePane?.runFile ?? "";
 }
 
+// A user-initiated split is refused when the new tiles would be too small to use.
+function splitActive() {
+  if (!activeTab) return;
+  const n = activeTab.panes.length + 1;
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  const w = $("stage").clientWidth / cols;
+  const h = $("stage").clientHeight / rows;
+  if (w < 320 || h < 140) {
+    showToast("Not enough room to split. Enlarge the window or close a pane.");
+    return;
+  }
+  addPane(activeTab, activePane?.cwd);
+}
+
+let toastTimer = null;
+function showToast(text) {
+  const t = $("toast");
+  t.textContent = text;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.hidden = true), 2500);
+}
+
 async function addPane(tab, cwd) {
   const pane = new Pane(tab, cwd);
   await pane.start();
@@ -515,7 +539,7 @@ function runAction(id) {
   const analyzeOpen = !!document.getElementById("analyze");
   switch (id) {
     case "newTab": newTab(activePane?.cwd); return true;
-    case "splitPane": if (activeTab) addPane(activeTab, activePane?.cwd); return true;
+    case "splitPane": splitActive(); return true;
     case "closePane": if (activePane) closePane(activePane); return true;
     case "overview": toggleOverview(); return true;
     case "prevTab": cycleTab(-1); return true;
@@ -729,7 +753,7 @@ function renderMenu() {
   };
   const sep = () => menu.append(document.createElement("hr"));
   item("New tab", "newTab", () => newTab(activePane?.cwd));
-  item("Split pane", "splitPane", () => activeTab && addPane(activeTab, activePane?.cwd));
+  item("Split pane", "splitPane", splitActive);
   item("Show open tabs", "overview", () => toggleOverview(true));
   sep();
   item("Find in terminal", "find", () => activePane?.toggleFind(true));
@@ -749,7 +773,7 @@ document.addEventListener("click", (e) => {
   document.querySelectorAll(".copy-pop").forEach((n) => n.remove());
 });
 $("new-tab").onclick = () => newTab(activePane?.cwd);
-$("split-btn").onclick = () => { if (activeTab) addPane(activeTab, activePane?.cwd); };
+$("split-btn").onclick = splitActive;
 $("overview-btn").onclick = () => toggleOverview();
 
 // ---------------------------------------------------------------- persistence of tabs and directories

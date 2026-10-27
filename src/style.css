@@ -5,6 +5,7 @@
   --sel: #26405e; --sel-line: #3a5a82; --focus: #4f7fb0;
   --err-fg: #ff8f8f; --err-bg: #4a2323; --warn-fg: #f0cf7a; --warn-bg: #463b1a; --note-fg: #8fc4ff; --note-bg: #1f3550;
   --hit: #2b3a2a; --cur: #3f5a2d; --rep-bg: #3a3320; --rep-fg: #e6c06a; --ok: #7fd1a8; --fail: #f0a070;
+  --panel-w: clamp(190px, 28vw, 330px);
   color-scheme: dark;
 }
 :root[data-theme="light"] {
@@ -19,7 +20,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); f
 body { display: flex; flex-direction: column; }
 #main { flex: 1; min-height: 0; display: flex; }
 #stage { flex: 1; min-width: 0; position: relative; }
-#blocks { width: 330px; overflow-y: auto; background: var(--bg3); border-left: 1px solid var(--line); padding: 8px; box-sizing: border-box; }
+#blocks { width: var(--panel-w); flex-shrink: 0; overflow-y: auto; background: var(--bg3); border-left: 1px solid var(--line); padding: 8px; box-sizing: border-box; }
 #blocks h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.6; }
 #block-lists .block-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 #block-lists .block-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; font-size: 13px; background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; }
@@ -125,7 +126,7 @@ mark.w-note { color: var(--note-fg); background: var(--note-bg); }
 .findbar button.on { border-color: #3584e4; }
 
 #main { position: relative; }
-#blocks-toggle { position: absolute; top: 50%; right: 330px; z-index: 6; width: 16px; height: 52px; margin-top: -26px; padding: 0; font-size: 16px; line-height: 52px; color: inherit; background: var(--bg2); border: 1px solid var(--line); border-right: none; border-radius: 8px 0 0 8px; cursor: pointer; opacity: 0.7; }
+#blocks-toggle { position: absolute; top: 50%; right: var(--panel-w); z-index: 6; width: 16px; height: 52px; margin-top: -26px; padding: 0; font-size: 16px; line-height: 52px; color: inherit; background: var(--bg2); border: 1px solid var(--line); border-right: none; border-radius: 8px 0 0 8px; cursor: pointer; opacity: 0.7; }
 #blocks-toggle:hover { opacity: 1; background: var(--btn); }
 #main.cmd-hidden #blocks { display: none; }
 #main.cmd-hidden #blocks-toggle { right: 0; }
@@ -134,3 +135,16 @@ mark.w-note { color: var(--note-fg); background: var(--note-bg); }
 .copy-pop { position: absolute; top: 100%; right: 0; z-index: 8; display: flex; flex-direction: column; min-width: 190px; padding: 4px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 6px 20px #0007; }
 .copy-pop button { text-align: left; padding: 5px 8px !important; border: none !important; background: transparent !important; }
 .copy-pop button:hover { background: var(--hover) !important; }
+
+#stage { min-width: 120px; }
+#status { white-space: nowrap; }
+#status #lines { flex-shrink: 0; }
+#status #runfile { min-width: 0; }
+/* narrow windows: give all the space to the terminals */
+@media (max-width: 640px) {
+  #blocks, #blocks-toggle { display: none; }
+  #tabs .tab-btn { max-width: 120px; }
+}
+
+#toast { position: fixed; left: 50%; bottom: 36px; transform: translateX(-50%); z-index: 50; max-width: 80vw; padding: 8px 14px; font-size: 13px; background: var(--bg2); color: var(--fg); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 6px 20px #0007; }
+#toast[hidden] { display: none; }
