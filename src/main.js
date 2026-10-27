@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./style.css";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze } from "./analyze.js";
 
@@ -892,10 +893,11 @@ function showAbout() {
   openDialog("About", (body) => {
     const wrap = document.createElement("div");
     wrap.className = "about";
-    wrap.innerHTML = `<img src="/logo.png" alt="" /><h2>Digterm</h2><div>Version 0.1.0 · MIT license</div>
+    wrap.innerHTML = `<img src="/logo.png" alt="" /><h2>Digterm</h2><div>Version <span id="about-version">…</span> · MIT license</div>
       <p>A terminal that helps you understand large command output.</p>
       <div class="note">github.com/somore100/DigTerm</div>`;
     body.append(wrap);
+    getVersion().then((v) => { wrap.querySelector("#about-version").textContent = v; }).catch(() => {});
   });
 }
 
