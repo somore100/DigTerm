@@ -1,14 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{ipc::{Channel, InvokeResponseBody}, AppHandle, Emitter, Manager, State};
 
@@ -16,11 +17,14 @@ struct Session {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     run_path: PathBuf,
+    pid: Option<u32>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
 }
 
 #[derive(Default)]
 struct AppState {
-    session: Mutex<Option<Session>>,
+    sessions: Mutex<HashMap<u32, Session>>,
+    next_id: AtomicU32,
     analysis: Mutex<Option<Arc<Analysis>>>,
 }
 
@@ -59,6 +63,7 @@ impl Analysis {
 /// One command's output: a byte range of the run file plus its line count and exit code.
 #[derive(Clone, Serialize)]
 struct Block {
+    session: u32,
     id: u32,
     start: u64,
     end: u64,
@@ -147,7 +152,7 @@ impl Scanner {
                     let exit = std::str::from_utf8(rest.get(2..).unwrap_or(&[]))
                         .ok()
                         .and_then(|s| s.parse().ok());
-                    emit(Block { id, start, end: self.esc_pos, lines, exit });
+                    emit(Block { session: 0, id, start, end: self.esc_pos, lines, exit });
                 }
             }
             _ => {}
@@ -184,8 +189,20 @@ fn shell_command(shell: &str, dir: &Path) -> Result<CommandBuilder, String> {
     Ok(cmd)
 }
 
-/// Starts the user's shell on a PTY. Every byte is appended to a run file on disk
-/// (raw, unmodified) and streamed to the frontend. Returns the run file path.
+#[derive(Serialize)]
+struct Spawned {
+    id: u32,
+    run_file: String,
+}
+
+#[derive(Clone, Serialize)]
+struct LinesEvent {
+    id: u32,
+    lines: u64,
+}
+
+/// Starts the user's shell on a PTY in `cwd` (falling back to home). Every byte is appended to a
+/// run file on disk (raw, unmodified) and streamed to the frontend.
 #[tauri::command]
 fn pty_spawn(
     app: AppHandle,
@@ -193,7 +210,9 @@ fn pty_spawn(
     on_data: Channel<InvokeResponseBody>,
     rows: u16,
     cols: u16,
-) -> Result<String, String> {
+    cwd: Option<String>,
+) -> Result<Spawned, String> {
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
@@ -204,11 +223,14 @@ fn pty_spawn(
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     let mut cmd = shell_command(&shell, &shell_dir)?;
-    if let Ok(home) = std::env::var("HOME") {
-        cmd.cwd(home);
+    let start_dir = cwd.filter(|d| Path::new(d).is_dir()).or_else(|| std::env::var("HOME").ok());
+    if let Some(dir) = start_dir {
+        cmd.cwd(dir);
     }
     let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
+    let pid = child.process_id();
+    let killer = child.clone_killer();
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
@@ -216,11 +238,13 @@ fn pty_spawn(
     let runs_dir = data_dir.join("runs");
     fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
     let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let path = runs_dir.join(format!("run-{ts}.raw"));
+    let path = runs_dir.join(format!("run-{ts}-{id}.raw"));
     let mut file = File::create(&path).map_err(|e| e.to_string())?;
 
-    *state.session.lock().unwrap() =
-        Some(Session { writer, master: pair.master, run_path: path.clone() });
+    state.sessions.lock().unwrap().insert(
+        id,
+        Session { writer, master: pair.master, run_path: path.clone(), pid, killer },
+    );
 
     std::thread::spawn(move || {
         let mut buf = [0u8; 16384];
@@ -235,7 +259,8 @@ fn pty_spawn(
                     let chunk = &buf[..n];
                     let _ = file.write_all(chunk);
                     lines += chunk.iter().filter(|&&b| b == b'\n').count() as u64;
-                    scanner.feed(chunk, offset, &mut |block| {
+                    scanner.feed(chunk, offset, &mut |mut block| {
+                        block.session = id;
                         let _ = app.emit("pty-block", block);
                     });
                     offset += n as u64;
@@ -243,48 +268,98 @@ fn pty_spawn(
                         break;
                     }
                     if last_emit.elapsed() >= Duration::from_millis(100) {
-                        let _ = app.emit("pty-lines", lines);
+                        let _ = app.emit("pty-lines", LinesEvent { id, lines });
                         last_emit = Instant::now();
                     }
                 }
             }
         }
         let _ = file.flush();
-        let _ = app.emit("pty-lines", lines);
+        let _ = app.emit("pty-lines", LinesEvent { id, lines });
         let _ = child.wait();
-        let _ = app.emit("pty-exit", ());
+        let _ = app.emit("pty-exit", id);
     });
 
-    Ok(path.to_string_lossy().into_owned())
+    Ok(Spawned { id, run_file: path.to_string_lossy().into_owned() })
 }
 
 #[tauri::command]
-fn pty_write(state: State<'_, AppState>, data: String) -> Result<(), String> {
-    let mut guard = state.session.lock().unwrap();
-    let session = guard.as_mut().ok_or("no session")?;
+fn pty_write(state: State<'_, AppState>, id: u32, data: String) -> Result<(), String> {
+    let mut guard = state.sessions.lock().unwrap();
+    let session = guard.get_mut(&id).ok_or("no session")?;
     session.writer.write_all(data.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn pty_resize(state: State<'_, AppState>, rows: u16, cols: u16) -> Result<(), String> {
-    let guard = state.session.lock().unwrap();
-    let session = guard.as_ref().ok_or("no session")?;
+fn pty_resize(state: State<'_, AppState>, id: u32, rows: u16, cols: u16) -> Result<(), String> {
+    let guard = state.sessions.lock().unwrap();
+    let session = guard.get(&id).ok_or("no session")?;
     session
         .master
         .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())
 }
 
-/// Returns the plain text of a byte range of the run file (escape sequences removed).
+/// Ends a session: kills its shell and forgets it. The run file stays on disk.
 #[tauri::command]
-fn read_block(state: State<'_, AppState>, start: u64, end: u64) -> Result<String, String> {
+fn pty_close(state: State<'_, AppState>, id: u32) {
+    if let Some(mut session) = state.sessions.lock().unwrap().remove(&id) {
+        let _ = session.killer.kill();
+    }
+}
+
+/// The shell's current working directory (Linux only for now).
+#[tauri::command]
+fn pty_cwd(state: State<'_, AppState>, id: u32) -> Option<String> {
+    let pid = state.sessions.lock().unwrap().get(&id)?.pid?;
+    #[cfg(target_os = "linux")]
+    {
+        return fs::read_link(format!("/proc/{pid}/cwd")).ok().map(|p| p.to_string_lossy().into_owned());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+#[tauri::command]
+fn save_layout(app: AppHandle, json: String) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("layout.json"), json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_layout(app: AppHandle) -> Result<Option<String>, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(fs::read_to_string(dir.join("layout.json")).ok())
+}
+
+/// Size in bytes of a session's run file (for analysing its full output).
+#[tauri::command]
+fn session_len(state: State<'_, AppState>, id: u32) -> Result<u64, String> {
+    let path = session_path(&state, id)?;
+    Ok(fs::metadata(path).map_err(|e| e.to_string())?.len())
+}
+
+#[tauri::command]
+fn home_dir() -> Option<String> {
+    std::env::var("HOME").ok()
+}
+
+fn session_path(state: &State<'_, AppState>, id: u32) -> Result<PathBuf, String> {
+    let guard = state.sessions.lock().unwrap();
+    Ok(guard.get(&id).ok_or("no session")?.run_path.clone())
+}
+
+/// Returns the plain text of a byte range of a session's run file (escape sequences removed).
+#[tauri::command]
+fn read_block(state: State<'_, AppState>, session: u32, start: u64, end: u64) -> Result<String, String> {
     if end < start {
         return Err("bad range".into());
     }
-    let path = {
-        let guard = state.session.lock().unwrap();
-        guard.as_ref().ok_or("no session")?.run_path.clone()
-    };
+    let path = session_path(&state, session)?;
     let mut f = File::open(path).map_err(|e| e.to_string())?;
     f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; (end - start) as usize];
@@ -298,14 +373,11 @@ fn current_analysis(state: &State<'_, AppState>) -> Result<Arc<Analysis>, String
 
 /// Builds the line index for a block and returns its line count.
 #[tauri::command]
-async fn analyze_open(state: State<'_, AppState>, start: u64, end: u64) -> Result<u64, String> {
+async fn analyze_open(state: State<'_, AppState>, session: u32, start: u64, end: u64) -> Result<u64, String> {
     if end < start {
         return Err("bad range".into());
     }
-    let path = {
-        let guard = state.session.lock().unwrap();
-        guard.as_ref().ok_or("no session")?.run_path.clone()
-    };
+    let path = session_path(&state, session)?;
     let mut f = File::open(&path).map_err(|e| e.to_string())?;
     f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; (end - start) as usize];
@@ -582,7 +654,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, read_block, analyze_open, analyze_lines, analyze_groups, analyze_search])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, read_block, analyze_open, analyze_lines, analyze_groups, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }

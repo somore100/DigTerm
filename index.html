@@ -6,11 +6,23 @@
     <title>Digterm</title>
   </head>
   <body>
+    <div id="tabbar">
+      <div id="tabs"></div>
+      <button id="new-tab" title="New tab (Ctrl+Shift+T)">+</button>
+      <span class="spacer"></span>
+      <button id="split-btn" title="Split pane (Ctrl+Shift+D)">⊞</button>
+      <button id="overview-btn" title="Tab overview (Ctrl+Shift+O)">▦</button>
+      <button id="menu-btn" title="Menu">☰</button>
+    </div>
+    <div id="menu" hidden></div>
     <div id="main">
-      <div id="terminal"></div>
-      <aside id="blocks"><h2>Commands</h2><ul id="block-list"></ul></aside>
+      <div id="stage"></div>
+      <button id="blocks-toggle" title="Hide or show the command list (Ctrl+Shift+B)">›</button>
+      <aside id="blocks"><h2>Commands</h2><div id="block-lists"></div></aside>
     </div>
     <div id="status"><span id="lines">0 lines captured</span><span id="runfile"></span></div>
+    <div id="overview" hidden></div>
+    <div id="dialog-host" hidden></div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

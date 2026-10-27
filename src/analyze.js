@@ -43,13 +43,13 @@ function buildHighlighter(s) {
 }
 
 export async function openAnalyze(block) {
-  const total = await invoke("analyze_open", { start: block.start, end: block.end });
+  const total = await invoke("analyze_open", { session: block.session, start: block.start, end: block.end });
 
   const root = document.createElement("div");
   root.id = "analyze";
   root.innerHTML = `
     <div class="an-bar">
-      <strong>Command #${block.id}</strong>
+      <strong>${block.label ?? `Command #${block.id}`}</strong>
       <span class="an-count"></span>
       <input class="an-search" placeholder="Search (Enter = next, Shift+Enter = previous)" />
       <span class="an-matches"></span>
