@@ -54,7 +54,11 @@ export async function openAnalyze(block) {
       <input class="an-search" placeholder="Search (Enter = next, Shift+Enter = previous)" />
       <span class="an-matches"></span>
       <input class="an-goto" placeholder="Go to line" size="8" />
-      <label class="an-toggle"><input type="checkbox" class="an-collapse" /> Collapse repeats</label>
+      <select class="an-mode" title="Fold repeated lines (view only)">
+        <option value="off">No folding</option>
+        <option value="exact">Fold exact repeats</option>
+        <option value="numbers">Fold repeats + number patterns</option>
+      </select>
       <label class="an-toggle"><input type="checkbox" class="an-hl-on" /> Highlight</label>
       <button class="an-hl-edit" title="Edit highlight words">Words…</button>
       <button class="an-copy-sel">Copy selection</button>
@@ -91,7 +95,7 @@ export async function openAnalyze(block) {
   const matchesEl = root.querySelector(".an-matches");
   const gotoEl = root.querySelector(".an-goto");
   const countEl = root.querySelector(".an-count");
-  const collapseEl = root.querySelector(".an-collapse");
+  const modeEl = root.querySelector(".an-mode");
   const copyAllEl = root.querySelector(".an-copy-all");
 
   const cache = new Map();
@@ -103,7 +107,8 @@ export async function openAnalyze(block) {
   let token = 0;
 
   // --- collapsed view model: runs of identical consecutive lines shown as one row ---
-  let groups = null; // [{first, count}], loaded on first use
+  const groupsByMode = {}; // mode -> [{first, count, summary}], loaded on first use
+  let groups = [];
   let collapsed = false;
   let expanded = new Set();
   let eff = []; // active (collapsed) groups
@@ -141,7 +146,7 @@ export async function openAnalyze(block) {
   function rowAt(v) {
     const k = lastGroupAtOrBefore(eff, (m) => vstart[m] <= v);
     if (k < 0) return { line: v, count: 1 };
-    if (vstart[k] === v) return { line: eff[k].first, count: eff[k].count };
+    if (vstart[k] === v) return { line: eff[k].first, count: eff[k].count, summary: eff[k].summary };
     return { line: v + cum[k], count: 1 };
   }
 
@@ -173,7 +178,7 @@ export async function openAnalyze(block) {
     const infos = [];
     for (let v = first; v < last; v++) infos.push(rowAt(v));
 
-    const need = infos.map((r) => r.line).filter((l) => !cache.has(l));
+    const need = infos.filter((r) => !r.summary).map((r) => r.line).filter((l) => !cache.has(l));
     if (need.length) {
       if (cache.size > 20000) cache.clear();
       let runStart = need[0], prev = need[0];
@@ -189,7 +194,7 @@ export async function openAnalyze(block) {
     const cur = matchIdx >= 0 ? matches[matchIdx] : -1;
     let html = "";
     for (const r of infos) {
-      const t = cache.get(r.line) ?? "";
+      const t = r.summary ?? cache.get(r.line) ?? "";
       const end = r.line + r.count - 1;
       let cls = "row";
       if (matches.length && hasMatchIn(r.line, end)) cls += cur >= r.line && cur <= end ? " cur" : " hit";
@@ -219,7 +224,7 @@ export async function openAnalyze(block) {
     let cursor = 0;
     for (const g of eff) {
       if (g.first > cursor) parts.push(await textFor(cursor, g.first));
-      const [line] = await invoke("analyze_lines", { from: g.first, count: 1 });
+      const line = g.summary ?? (await invoke("analyze_lines", { from: g.first, count: 1 }))[0];
       parts.push(`${line}  ×${g.count}`);
       cursor = g.first + g.count;
     }
@@ -259,12 +264,16 @@ export async function openAnalyze(block) {
     render();
   });
 
-  collapseEl.addEventListener("change", async () => {
+  modeEl.addEventListener("change", async () => {
     const topLine = rowAt(Math.floor(body.scrollTop / ROW)).line;
-    if (collapseEl.checked && !groups) {
-      groups = (await invoke("analyze_groups")).map(([first, count]) => ({ first, count }));
+    const mode = modeEl.value;
+    if (mode !== "off" && !groupsByMode[mode]) {
+      modeEl.disabled = true;
+      groupsByMode[mode] = await invoke("analyze_groups", { mode });
+      modeEl.disabled = false;
     }
-    collapsed = collapseEl.checked;
+    collapsed = mode !== "off";
+    groups = collapsed ? groupsByMode[mode] : [];
     expanded = new Set();
     rebuild();
     body.scrollTop = viewOf(topLine) * ROW;

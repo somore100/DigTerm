@@ -330,36 +330,181 @@ async fn analyze_lines(state: State<'_, AppState>, from: u64, count: u64) -> Res
     a.read(from as usize, (from + count) as usize)
 }
 
-/// Finds runs of identical consecutive lines. Returns (first_line, count) for runs of 2 or more.
+#[derive(Serialize)]
+struct Group {
+    first: u64,
+    count: u64,
+    /// Template with number ranges, e.g. `item ⟨1…5000, +1⟩`; None for exact repeats.
+    summary: Option<String>,
+}
+
+enum Tok<'a> {
+    Text(&'a str),
+    Num(&'a str),
+}
+
+/// Splits a line into text and standalone numbers. A digit run only counts as a number when it is
+/// not glued to letters or underscores (so `sda1`, `v2` and hex ids stay literal) and fits in an i64.
+fn tokenize(line: &str) -> Vec<Tok<'_>> {
+    let b = line.as_bytes();
+    let mut toks = Vec::new();
+    let mut text_start = 0;
+    let mut i = 0;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        let glued = |c: u8| c.is_ascii_alphabetic() || c == b'_';
+        let before = start > 0 && glued(b[start - 1]);
+        let after = i < b.len() && glued(b[i]);
+        if !before && !after && i - start <= 18 {
+            toks.push(Tok::Text(&line[text_start..start]));
+            toks.push(Tok::Num(&line[start..i]));
+            text_start = i;
+        }
+    }
+    toks.push(Tok::Text(&line[text_start..]));
+    toks
+}
+
+fn shape_key(toks: &[Tok]) -> String {
+    let mut k = String::new();
+    for t in toks {
+        match t {
+            Tok::Text(s) => k.push_str(s),
+            Tok::Num(_) => k.push('\u{1}'),
+        }
+    }
+    k
+}
+
+struct Slot {
+    min: i64,
+    max: i64,
+    min_s: String,
+    max_s: String,
+    prev: i64,
+    step: Option<i64>,
+    uniform: bool,
+    seen: u64,
+}
+
+struct Run {
+    key: String,
+    first: usize,
+    count: usize,
+    texts: Vec<String>,
+    slots: Vec<Slot>,
+}
+
+impl Run {
+    fn new(i: usize, key: String, toks: &[Tok]) -> Run {
+        let mut run = Run { key, first: i, count: 0, texts: Vec::new(), slots: Vec::new() };
+        for t in toks {
+            match t {
+                Tok::Text(s) => run.texts.push((*s).to_string()),
+                Tok::Num(n) => {
+                    let v: i64 = n.parse().unwrap_or(0);
+                    run.slots.push(Slot { min: v, max: v, min_s: (*n).into(), max_s: (*n).into(), prev: v, step: None, uniform: true, seen: 0 });
+                }
+            }
+        }
+        run
+    }
+
+    fn add(&mut self, toks: &[Tok]) {
+        self.count += 1;
+        let mut si = 0;
+        for t in toks {
+            if let Tok::Num(n) = t {
+                let v: i64 = n.parse().unwrap_or(0);
+                let s = &mut self.slots[si];
+                if s.seen > 0 {
+                    let d = v - s.prev;
+                    match s.step {
+                        None if s.seen == 1 => s.step = Some(d),
+                        Some(prev_d) if prev_d == d => {}
+                        _ => s.uniform = false,
+                    }
+                    if v < s.min {
+                        s.min = v;
+                        s.min_s = (*n).into();
+                    }
+                    if v > s.max {
+                        s.max = v;
+                        s.max_s = (*n).into();
+                    }
+                }
+                s.prev = v;
+                s.seen += 1;
+                si += 1;
+            }
+        }
+    }
+
+    fn summary(&self) -> Option<String> {
+        if self.slots.iter().all(|s| s.min == s.max) {
+            return None;
+        }
+        let mut out = String::new();
+        for (i, text) in self.texts.iter().enumerate() {
+            out.push_str(text);
+            if let Some(s) = self.slots.get(i) {
+                if s.min == s.max {
+                    out.push_str(&s.min_s);
+                } else if let (true, Some(d)) = (s.uniform, s.step) {
+                    out.push_str(&format!("⟨{}…{}, {:+}⟩", s.min_s, s.max_s, d));
+                } else {
+                    out.push_str(&format!("⟨{}…{}⟩", s.min_s, s.max_s));
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
+/// Finds runs of consecutive lines to fold. `mode` is "exact" (identical lines) or "numbers"
+/// (lines identical except for standalone numbers). Returns runs of 2 or more lines.
 #[tauri::command]
-async fn analyze_groups(state: State<'_, AppState>) -> Result<Vec<(u64, u64)>, String> {
+async fn analyze_groups(state: State<'_, AppState>, mode: String) -> Result<Vec<Group>, String> {
     let a = current_analysis(&state)?;
+    let numbers = mode == "numbers";
     let total = a.starts.len();
     let mut groups = Vec::new();
-    let mut prev: Option<String> = None;
-    let mut run_start = 0usize;
-    let mut run_len = 0usize;
+    let mut run: Option<Run> = None;
     let mut from = 0;
+
+    let mut close = |run: &mut Option<Run>| {
+        if let Some(r) = run.take() {
+            if r.count >= 2 {
+                groups.push(Group { first: r.first as u64, count: r.count as u64, summary: r.summary() });
+            }
+        }
+    };
+
     while from < total {
         let to = (from + 20_000).min(total);
         for (k, line) in a.read(from, to)?.into_iter().enumerate() {
             let i = from + k;
-            if prev.as_deref() == Some(line.as_str()) {
-                run_len += 1;
+            let toks = if numbers { tokenize(&line) } else { vec![Tok::Text(&line)] };
+            let key = shape_key(&toks);
+            if run.as_ref().map_or(false, |r| r.key == key) {
+                run.as_mut().unwrap().add(&toks);
             } else {
-                if run_len >= 2 {
-                    groups.push((run_start as u64, run_len as u64));
-                }
-                run_start = i;
-                run_len = 1;
-                prev = Some(line);
+                close(&mut run);
+                let mut r = Run::new(i, key, &toks);
+                r.add(&toks);
+                run = Some(r);
             }
         }
         from = to;
     }
-    if run_len >= 2 {
-        groups.push((run_start as u64, run_len as u64));
-    }
+    close(&mut run);
     Ok(groups)
 }
 
