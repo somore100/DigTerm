@@ -20,6 +20,7 @@ const PREF_DEFAULTS = {
   tabTitle: "folder", // folder | short | full
   scrollback: 5000,
   commandsHidden: false,
+  autoSize: false, // smaller text when there are more terminals in a tab
   copyMode: "output", // output | command
   keys: {}, // action id -> combo overrides
 };
@@ -97,6 +98,7 @@ class Pane {
   constructor(tab, cwd, font) {
     this.tab = tab;
     this.font = font ?? prefs.font; // zoom is per terminal
+    this.manual = font !== undefined; // true once zoomed by hand; auto sizing then leaves it alone
     this.id = null;
     this.cwd = cwd ?? null;
     this.lines = 0;
@@ -126,6 +128,7 @@ class Pane {
     tab.grid.append(this.el);
     tab.panes.push(this);
     layoutTab(tab);
+    if (!this.manual) this.font = baseFontFor(tab);
 
     this.term = new Terminal({
       fontFamily: "monospace",
@@ -145,7 +148,11 @@ class Pane {
     // debounced: the shell redraws its prompt on every size change, so only send the settled size
     this.term.onResize(({ rows, cols }) => {
       clearTimeout(this.resizeTimer);
-      this.resizeTimer = setTimeout(() => { if (this.id !== null) invoke("pty_resize", { id: this.id, rows, cols }); }, 150);
+      this.resizeTimer = setTimeout(() => {
+        if (this.id === null || (this.sent?.rows === rows && this.sent?.cols === cols)) return;
+        this.sent = { rows, cols };
+        invoke("pty_resize", { id: this.id, rows, cols });
+      }, 150);
     });
     new ResizeObserver(() => { try { this.fit.fit(); } catch {} }).observe(this.termEl);
     this.termEl.addEventListener("wheel", (e) => {
@@ -203,8 +210,12 @@ class Pane {
   }
 
   async start() {
+    // let the layout settle first, so the shell starts at its final size and doesn't redraw its prompt
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    try { this.fit.fit(); } catch {}
     const onData = new Channel();
     onData.onmessage = (msg) => this.term.write(new Uint8Array(msg));
+    this.sent = { rows: this.term.rows, cols: this.term.cols };
     const info = await invoke("pty_spawn", {
       onData,
       rows: this.term.rows,
@@ -298,6 +309,7 @@ function layoutTab(tab) {
   // tiles never shrink below a usable size; a smaller window scrolls the tab instead
   tab.grid.style.gridTemplateColumns = `repeat(${cols}, minmax(${MIN_TILE_W}px, 1fr))`;
   tab.grid.style.gridTemplateRows = `repeat(${rows}, minmax(${MIN_TILE_H}px, 1fr))`;
+  applyAutoFonts(tab);
 }
 
 function focusPane(pane) {
@@ -369,7 +381,7 @@ function closePane(pane) {
 
 // ---------------------------------------------------------------- tabs
 
-async function newTab(cwd, font) {
+function createTab() {
   const el = document.createElement("div");
   el.className = "tab";
   const grid = document.createElement("div");
@@ -379,6 +391,11 @@ async function newTab(cwd, font) {
   const tab = { el, grid, panes: [], last: null };
   tabs.push(tab);
   selectTab(tab);
+  return tab;
+}
+
+async function newTab(cwd, font) {
+  const tab = createTab();
   await addPane(tab, cwd, font);
   return tab;
 }
@@ -502,22 +519,62 @@ $("blocks-toggle").onclick = () => setCommandsHidden(!prefs.commandsHidden);
 const clampFont = (px) => Math.min(32, Math.max(8, px));
 const zoomPercent = (pane) => `${Math.round(((pane?.font ?? prefs.font) / FONT_DEFAULT) * 100)}%`;
 
-// Zoom applies to one terminal only, so other terminals are not redrawn.
-function setPaneFont(pane, px) {
-  if (!pane) return;
-  pane.font = clampFont(px);
-  pane.term.options.fontSize = pane.font;
+// Text size: the default (Preferences), optionally scaled down as a tab gets more terminals,
+// and zoom by hand, which applies to one terminal only so the others are not redrawn.
+function autoFontFor(n) {
+  const factor = n <= 1 ? 1 : n === 2 ? 0.93 : n <= 4 ? 0.86 : n <= 6 ? 0.79 : 0.72;
+  return clampFont(Math.round(prefs.font * factor));
+}
+const baseFontFor = (tab) => (prefs.autoSize ? autoFontFor(tab.panes.length) : prefs.font);
+
+function applyPaneFont(pane, px) {
+  px = clampFont(px);
+  if (!pane.term || pane.font === px) return;
+  pane.font = px;
+  pane.term.options.fontSize = px;
   try { pane.fit.fit(); } catch {}
   const label = document.getElementById("zoom-label");
   if (label && pane === activePane) label.textContent = zoomPercent(pane);
   persist();
 }
 
+function applyAutoFonts(tab) {
+  for (const p of tab.panes) if (!p.manual) applyPaneFont(p, baseFontFor(tab));
+}
+
+function setPaneFont(pane, px) {
+  if (!pane) return;
+  pane.manual = true;
+  applyPaneFont(pane, px);
+}
+
+function resetPaneFont(pane) {
+  if (!pane) return;
+  pane.manual = false;
+  applyPaneFont(pane, baseFontFor(pane.tab));
+}
+
+// Zoom every terminal by the same step; terminals zoomed by hand keep their difference.
+function zoomAll(delta) {
+  prefs.font = clampFont(prefs.font + delta);
+  savePrefs();
+  for (const p of panes.values()) applyPaneFont(p, p.manual ? p.font + delta : baseFontFor(p.tab));
+  refreshZoomLabels();
+}
+
+function refreshZoomLabels() {
+  const a = document.getElementById("zoom-all-label");
+  const t = document.getElementById("zoom-label");
+  if (a) a.textContent = zoomPercent(null);
+  if (t) t.textContent = zoomPercent(activePane);
+}
+
 // the default size for new terminals (Preferences); also resets every open terminal to it
 function setDefaultFont(px) {
   prefs.font = clampFont(px);
   savePrefs();
-  for (const p of panes.values()) setPaneFont(p, prefs.font);
+  for (const p of panes.values()) resetPaneFont(p);
+  refreshZoomLabels();
 }
 
 async function toggleFullscreen() {
@@ -542,6 +599,9 @@ const ACTIONS = [
   { id: "zoomIn", label: "Zoom in", combo: "Ctrl+=" },
   { id: "zoomOut", label: "Zoom out", combo: "Ctrl+-" },
   { id: "zoomReset", label: "Reset zoom", combo: "Ctrl+0" },
+  { id: "zoomAllIn", label: "Zoom all terminals in", combo: "Ctrl+Alt+=" },
+  { id: "zoomAllOut", label: "Zoom all terminals out", combo: "Ctrl+Alt+-" },
+  { id: "zoomAllReset", label: "Reset zoom of all terminals", combo: "Ctrl+Alt+0" },
   { id: "fullscreen", label: "Fullscreen", combo: "F11" },
   { id: "prefs", label: "Preferences", combo: "Ctrl+," },
   { id: "shortcuts", label: "Keyboard shortcuts", combo: "Ctrl+Shift+/" },
@@ -590,7 +650,10 @@ function runAction(id) {
     case "find": if (activePane) activePane.toggleFind(true); return true;
     case "zoomIn": if (analyzeOpen) return false; setPaneFont(activePane, (activePane?.font ?? prefs.font) + 1); return true;
     case "zoomOut": if (analyzeOpen) return false; setPaneFont(activePane, (activePane?.font ?? prefs.font) - 1); return true;
-    case "zoomReset": if (analyzeOpen) return false; setPaneFont(activePane, prefs.font); return true;
+    case "zoomAllIn": if (analyzeOpen) return false; zoomAll(1); return true;
+    case "zoomAllOut": if (analyzeOpen) return false; zoomAll(-1); return true;
+    case "zoomAllReset": if (analyzeOpen) return false; setDefaultFont(FONT_DEFAULT); return true;
+    case "zoomReset": if (analyzeOpen) return false; resetPaneFont(activePane); return true;
     case "fullscreen": toggleFullscreen(); return true;
     case "prefs": showPreferences(); return true;
     case "shortcuts": showShortcuts(); return true;
@@ -681,6 +744,10 @@ function showPreferences() {
     }
     titleStyle.onchange = () => { prefs.tabTitle = titleStyle.value; savePrefs(); renderTabBar(true); };
 
+    const auto = document.createElement("input");
+    auto.type = "checkbox"; auto.checked = prefs.autoSize;
+    auto.onchange = () => { prefs.autoSize = auto.checked; savePrefs(); tabs.forEach(applyAutoFonts); };
+
     const restore = document.createElement("input");
     restore.type = "checkbox"; restore.checked = prefs.restoreDirs;
     restore.onchange = () => { prefs.restoreDirs = restore.checked; savePrefs(); };
@@ -695,6 +762,7 @@ function showPreferences() {
 
     body.append(
       heading("Appearance"), opt("Theme", theme), opt("Font size", font),
+      opt("Smaller text when a tab has more terminals", auto),
       heading("Tabs"), opt("Tab title", titleStyle),
       heading("Startup"), opt("Restore directories on start", restore),
       heading("Terminal"), opt("Scrollback lines (full output is always saved to disk)", scroll),
@@ -797,12 +865,22 @@ function renderMenu() {
     b.onclick = (e) => { e.stopPropagation(); setTheme(t); renderMenu(); };
     themeRow.append(b);
   }
-  const zoomRow = document.createElement("div");
-  zoomRow.className = "zoom-row";
   const mk = (text, fn) => Object.assign(document.createElement("button"), { textContent: text, onclick: (e) => { e.stopPropagation(); fn(); } });
-  const zl = Object.assign(document.createElement("span"), { id: "zoom-label", textContent: zoomPercent(activePane) });
-  zoomRow.append(mk("−", () => setPaneFont(activePane, (activePane?.font ?? prefs.font) - 1)), zl, mk("+", () => setPaneFont(activePane, (activePane?.font ?? prefs.font) + 1)));
-  menu.append(themeRow, zoomRow, document.createElement("hr"));
+  const zoomRow = (caption, labelId, pct, minus, plus) => {
+    const row = document.createElement("div");
+    row.className = "zoom-row";
+    const cap = Object.assign(document.createElement("span"), { className: "zoom-cap", textContent: caption });
+    const lab = Object.assign(document.createElement("span"), { id: labelId, className: "zoom-pct", textContent: pct });
+    row.append(cap, mk("−", minus), lab, mk("+", plus));
+    return row;
+  };
+  const cur = () => activePane?.font ?? prefs.font;
+  menu.append(
+    themeRow,
+    zoomRow("All terminals", "zoom-all-label", zoomPercent(null), () => zoomAll(-1), () => zoomAll(1)),
+    zoomRow("This terminal", "zoom-label", zoomPercent(activePane), () => setPaneFont(activePane, cur() - 1), () => setPaneFont(activePane, cur() + 1)),
+    document.createElement("hr"),
+  );
 
   const item = (label, shortcutId, fn) => {
     const b = document.createElement("button");
@@ -846,7 +924,7 @@ let lastSaved = "";
 async function persist() {
   const data = {
     active: Math.max(0, tabs.indexOf(activeTab)),
-    tabs: tabs.map((t) => ({ panes: t.panes.map((p) => ({ cwd: p.cwd, font: p.font })) })),
+    tabs: tabs.map((t) => ({ panes: t.panes.map((p) => ({ cwd: p.cwd, font: p.font, manual: p.manual })) })),
   };
   const json = JSON.stringify(data);
   if (json === lastSaved) return;
@@ -899,8 +977,12 @@ if (prefs.restoreDirs && layout?.tabs?.length) {
   for (const t of layout.tabs) {
     // entries are {cwd, font}; older saves are plain directory strings
     const entries = (t.panes?.length ? t.panes : [null]).map((e) => (e && typeof e === "object" ? e : { cwd: e }));
-    const tab = await newTab(entries[0].cwd, entries[0].font);
-    for (const e of entries.slice(1)) await addPane(tab, e.cwd, e.font);
+    // create every pane first and start the shells together, so none is resized right after starting
+    const tab = createTab();
+    const created = entries.map((e) => new Pane(tab, e.cwd, e.manual ? e.font : undefined));
+    await Promise.all(created.map((p) => p.start()));
+    focusPane(created[0]);
+    persist();
   }
   selectTab(tabs[Math.min(layout.active ?? 0, tabs.length - 1)]);
 } else {

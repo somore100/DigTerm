@@ -190,3 +190,8 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 .tab::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 5px; }
 .an-body::-webkit-scrollbar { width: 12px; height: 12px; }
 .an-body::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 6px; }
+
+#menu .zoom-row { gap: 6px; padding: 2px 4px; }
+#menu .zoom-row button { width: 30px !important; justify-content: center; }
+.zoom-cap { flex: 1; font-size: 12px; opacity: 0.7; }
+.zoom-pct { min-width: 44px; text-align: center; }
