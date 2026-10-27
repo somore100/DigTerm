@@ -843,7 +843,7 @@ function showAbout() {
   openDialog("About", (body) => {
     const wrap = document.createElement("div");
     wrap.className = "about";
-    wrap.innerHTML = `<img src="/logo.png" alt="" /><h2>Digterm</h2><div>Version 0.0.1 · MIT license</div>
+    wrap.innerHTML = `<img src="/logo.png" alt="" /><h2>Digterm</h2><div>Version 0.1.0 · MIT license</div>
       <p>A terminal that helps you understand large command output.</p>
       <div class="note">github.com/somore100/DigTerm</div>`;
     body.append(wrap);

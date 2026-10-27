@@ -124,12 +124,32 @@ On Debian or Ubuntu use the equivalent `-dev` packages from the
 
 ## Roadmap
 
-- A Patterns panel: group lines by pattern across the whole output, ranked by count.
+Roughly in the order I plan to do them. Nothing here is promised, and the order may change.
+
+**Next**
+- Show the command itself (and how long it took) in the Commands list, not just its line count and exit code.
+- History: reopen the output of earlier sessions after a restart, and clean up old saved output (retention limits).
+- Jump between errors and warnings, and filter the viewer by severity.
+- Export or copy a viewer selection with sensitive details (usernames, IP addresses, paths) masked.
+- Step through a pattern's lines with ▲ ▼ buttons, and group by words and ids as well as numbers.
+
+**Then**
 - Folding of repeating multi-line blocks.
-- Diagnostic command presets (read-only, documented, human-editable).
-- Comparing two runs of the same command.
-- PowerShell and fish integration; Windows and macOS folder restore.
+- Compact view: squeeze runs of spaces, shorten very long words (ids, hashes) and repeated path prefixes, all view-only.
+- Ctrl+click a folder or `file:line` in the output to `cd` there or open it.
+- `command | digterm` to send output from any other terminal straight into the viewer.
+- Follow a running command's output live in the viewer.
+- Diagnostic command presets (read-only, documented, human-editable), with a clear explanation before anything needs elevated privileges.
+- Comparing two runs of the same command, ignoring timestamps and process ids.
+- New Window.
+
+**Platforms**
+- PowerShell, cmd and fish integration, and remembering folders on Windows and macOS.
+- Code signing and automatic updates.
+
+**Maybe**
 - Optional local AI assistance (never sends logs anywhere without an explicit choice).
+- Skipping full-screen programs such as `vim` in the command list.
 
 ## Built with
 
