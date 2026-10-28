@@ -72,7 +72,12 @@ export async function openAnalyze(block) {
         <option value="exact">Fold exact repeats</option>
         <option value="numbers">Fold repeats + number patterns</option>
         <option value="fields">Fold repeats + word/field patterns</option>
+        <option value="sev-err">Show only error lines</option>
+        <option value="sev-warn">Show only warning + error lines</option>
       </select>
+      <span class="an-sevnav" title="Jump between lines with error words (F8 / Shift+F8). Uses the filter's words; the filter above decides whether warnings count too.">
+        <button class="an-prev-err">▲</button><button class="an-next-err">▼ Error</button>
+      </span>
       <label class="an-toggle" title="Show only each command's output, without the prompts and typed commands" hidden><input type="checkbox" class="an-hide-cmd" /> Hide commands</label>
       <label class="an-toggle"><input type="checkbox" class="an-hl-on" /> Highlight</label>
       <label class="an-toggle" title="Show long lines as indented sub-lines instead of scrolling sideways"><input type="checkbox" class="an-wrap" /> Wrap long lines</label>
@@ -519,10 +524,50 @@ export async function openAnalyze(block) {
     render();
   });
 
+  // --- severity: lines with error / warning words (the highlight word lists), found by the backend
+  let sev = null; // {err: [lines], warn: [lines]}, reset when the word lists change
+  const wordList = (t) => t.split(",").map((w) => w.trim()).filter(Boolean);
+  async function loadSeverity() {
+    if (!sev) sev = await invoke("analyze_severity", { err: wordList(settings.err), warn: wordList(settings.warn) });
+    return sev;
+  }
+  const sevLines = async (withWarn) => {
+    const s = await loadSeverity();
+    return withWarn ? [...s.err, ...s.warn].sort((a, b) => a - b) : s.err;
+  };
+  // everything between the kept lines becomes one collapsed row ("N lines hidden")
+  function groupsAround(keep) {
+    const out = [];
+    const gap = (from, to) => {
+      const n = to - from;
+      if (n >= 2) out.push({ first: from, count: n, summary: `⋯ ${n.toLocaleString()} lines hidden` });
+    };
+    let prev = 0;
+    for (const k of keep) { gap(prev, k); prev = k + 1; }
+    gap(prev, total);
+    return out;
+  }
+
+  async function stepSeverity(dir) {
+    const lines = await sevLines(modeEl.value === "sev-warn");
+    if (!lines.length) { matchesEl.textContent = "no error lines"; return; }
+    const cur = caret ? rowAt(caret.v).line : -1;
+    let next;
+    if (dir > 0) next = lines.find((l) => l > cur) ?? lines[0];
+    else next = [...lines].reverse().find((l) => l < cur) ?? lines[lines.length - 1];
+    matchesEl.textContent = `line ${(next + 1).toLocaleString()} · ${lines.indexOf(next) + 1} / ${lines.length.toLocaleString()}`;
+    jumpTo(next);
+  }
+  root.querySelector(".an-next-err").onclick = () => stepSeverity(1);
+  root.querySelector(".an-prev-err").onclick = () => stepSeverity(-1);
+
   modeEl.addEventListener("change", async () => {
     const topLine = rowAt(vAtY(body.scrollTop).v).line;
     const mode = modeEl.value;
-    if (mode !== "off" && !groupsByMode[mode]) {
+    if (mode.startsWith("sev-")) {
+      modeEl.disabled = true;
+      try { groupsByMode[mode] = groupsAround(await sevLines(mode === "sev-warn")); } finally { modeEl.disabled = false; }
+    } else if (mode !== "off" && !groupsByMode[mode]) {
       modeEl.disabled = true;
       groupsByMode[mode] = await invoke("analyze_groups", { mode });
       modeEl.disabled = false;
@@ -616,7 +661,16 @@ export async function openAnalyze(block) {
     saveSettings(settings);
     highlight = buildHighlighter(settings);
     render();
+    // the error/warning word lists also define the severity lines: refresh them shortly after typing stops
+    clearTimeout(sevTimer);
+    sevTimer = setTimeout(() => {
+      sev = null;
+      delete groupsByMode["sev-err"];
+      delete groupsByMode["sev-warn"];
+      if (modeEl.value.startsWith("sev-")) modeEl.dispatchEvent(new Event("change"));
+    }, 600);
   }
+  let sevTimer = 0;
   hlOn.addEventListener("change", refreshHighlight);
   hlPanel.addEventListener("input", refreshHighlight);
   root.querySelector(".an-hl-edit").onclick = () => { hlPanel.hidden = !hlPanel.hidden; };
@@ -649,6 +703,7 @@ export async function openAnalyze(block) {
     if (!typing && e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "c" && tsel && !window.getSelection().toString()) {
       copyText(root.querySelector(".an-copy-sel"), tselText);
     }
+    if (e.key === "F8") { e.preventDefault(); stepSeverity(e.shiftKey ? -1 : 1); }
     if (e.key === "Escape") close();
     if (e.ctrlKey && !e.shiftKey && (e.key === "=" || e.key === "+")) { e.preventDefault(); zoom(1); }
     if (e.ctrlKey && !e.shiftKey && e.key === "-") { e.preventDefault(); zoom(-1); }

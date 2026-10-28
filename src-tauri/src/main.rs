@@ -996,6 +996,59 @@ async fn analyze_groups(state: State<'_, AppState>, mode: String) -> Result<Vec<
     Ok(groups)
 }
 
+/// True when `hay` (already lower case) contains `word` (lower case) as a whole word.
+fn has_word(hay: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(p) = hay[from..].find(word) {
+        let s = from + p;
+        let e = s + word.len();
+        let before_ok = hay[..s].chars().next_back().map_or(true, |c| !is_word(c));
+        let after_ok = hay[e..].chars().next().map_or(true, |c| !is_word(c));
+        if before_ok && after_ok {
+            return true;
+        }
+        from = s + hay[s..].chars().next().map_or(1, |c| c.len_utf8());
+    }
+    false
+}
+
+#[derive(Serialize)]
+struct Severity {
+    /// 0-based lines containing one of the error words, capped at 200k.
+    err: Vec<u64>,
+    /// Lines with a warning word but no error word, capped at 200k.
+    warn: Vec<u64>,
+}
+
+/// Finds the lines that contain an error word or a warning word (whole words, any case).
+#[tauri::command]
+async fn analyze_severity(state: State<'_, AppState>, err: Vec<String>, warn: Vec<String>) -> Result<Severity, String> {
+    let a = current_analysis(&state)?;
+    let lower = |v: Vec<String>| -> Vec<String> { v.into_iter().map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).collect() };
+    let (err, warn) = (lower(err), lower(warn));
+    let (mut e_hits, mut w_hits) = (Vec::new(), Vec::new());
+    let total = a.starts.len();
+    let mut from = 0;
+    while from < total {
+        let to = (from + 20_000).min(total);
+        for (k, line) in a.read(from, to)?.iter().enumerate() {
+            let low = line.to_lowercase();
+            let i = (from + k) as u64;
+            if e_hits.len() < 200_000 && err.iter().any(|w| has_word(&low, w)) {
+                e_hits.push(i);
+            } else if w_hits.len() < 200_000 && warn.iter().any(|w| has_word(&low, w)) {
+                w_hits.push(i);
+            }
+        }
+        from = to;
+    }
+    Ok(Severity { err: e_hits, warn: w_hits })
+}
+
 /// Returns the line numbers (0-based) containing the query, capped at 200k matches.
 #[tauri::command]
 async fn analyze_search(state: State<'_, AppState>, query: String, case_sensitive: bool) -> Result<Vec<u64>, String> {
@@ -1078,7 +1131,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
@@ -1292,6 +1345,20 @@ mod tests {
         assert!(groups_of("a b\nc d\ne f\n").is_empty());
         assert!(groups_of("one two three\nonly two\n").is_empty());
         assert!(groups_of("").is_empty());
+    }
+
+    #[test]
+    fn has_word_matches_whole_words_only() {
+        assert!(has_word("build failed: x", "failed"));
+        assert!(has_word("error", "error"));
+        assert!(has_word("an error.", "error"));
+        assert!(!has_word("errors found", "error"));
+        assert!(!has_word("no_error_here", "error"));
+        assert!(!has_word("terror", "error"));
+        assert!(has_word("terror and error", "error"));
+        assert!(has_word("segmentation fault (core dumped)", "core dumped"));
+        assert!(!has_word("anything", ""));
+        assert!(has_word("fehler: größe fehler", "fehler"));
     }
 
     #[test]
