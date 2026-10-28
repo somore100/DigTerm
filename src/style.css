@@ -206,3 +206,5 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 .dialog .hist-cmd { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 3px 0; }
 .dialog .hist-cmd span { font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dialog .hist-cmd button { font: inherit; font-size: 12px; color: inherit; background: var(--btn); border: 1px solid var(--line2); border-radius: 4px; padding: 2px 8px; cursor: pointer; flex: none; }
+
+#split-label { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 0 0 8px; cursor: pointer; opacity: 0.8; }

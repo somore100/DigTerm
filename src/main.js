@@ -23,6 +23,7 @@ const PREF_DEFAULTS = {
   commandsHidden: false,
   autoSize: false, // smaller text when there are more terminals in a tab
   copyMode: "output", // output | command
+  splitByEntry: true, // Analyze opens one command (true) or the whole run (false)
   newestBottom: false, // Commands list: newest command at the bottom (list follows the bottom)
   cleanupDays: 0, // delete saved output older than this many days on start; 0 = never
   keys: {}, // action id -> combo overrides
@@ -283,7 +284,7 @@ class Pane {
     };
     const analyze = document.createElement("button");
     analyze.textContent = "Analyze";
-    analyze.onclick = () => openAnalyze(b);
+    analyze.onclick = () => (prefs.splitByEntry ? openAnalyze(b) : analyzeFull(this));
     const buttons = document.createElement("span");
     buttons.append(analyze, copy, more);
     li.append(info, buttons);
@@ -311,6 +312,14 @@ async function analyzeFull(pane) {
   const end = await invoke("session_len", { id: pane.id });
   if (end > 0) openAnalyze({ session: pane.id, id: "all", label: "Full output of this terminal", start: 0, end });
 }
+
+function setSplitByEntry(v) {
+  prefs.splitByEntry = v;
+  savePrefs();
+  $("split-entry").checked = v;
+}
+$("split-entry").onchange = (e) => setSplitByEntry(e.target.checked);
+$("split-entry").checked = prefs.splitByEntry;
 
 const MIN_TILE_W = 320;
 const MIN_TILE_H = 140;
@@ -795,6 +804,10 @@ function showPreferences() {
     };
 
     const fmtBytes = (n) => (n < 1048576 ? `${Math.round(n / 1024)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
+    const split = document.createElement("input");
+    split.type = "checkbox"; split.checked = prefs.splitByEntry;
+    split.onchange = () => setSplitByEntry(split.checked);
+
     const order = document.createElement("select");
     for (const [v, l] of [[false, "Newest at the top"], [true, "Newest at the bottom (follows new commands)"]]) order.add(new Option(l, v, false, prefs.newestBottom === v));
     order.onchange = () => { prefs.newestBottom = order.value === "true"; savePrefs(); applyCommandOrder(); };
@@ -832,6 +845,7 @@ function showPreferences() {
       heading("Startup"), opt("Restore directories on start", restore),
       heading("Terminal"), opt("Scrollback lines (full output is always saved to disk)", scroll),
       heading("Commands list"), opt("Order", order),
+      opt("Analyze one command at a time (off: Analyze opens the whole run)", split),
       heading("Saved output"), opt("Delete saved output older than (days, 0 = never)", days), opt("Disk used", cleanRow),
     );
     const note = document.createElement("div");
