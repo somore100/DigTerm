@@ -24,7 +24,7 @@ const PREF_DEFAULTS = {
   autoSize: false, // smaller text when there are more terminals in a tab
   copyMode: "output", // output | command
   splitByEntry: true, // Analyze opens one command (true) or the whole run (false)
-  newestBottom: false, // Commands list: newest command at the bottom (list follows the bottom)
+  newestBottom: true, // Commands list: first command on top, newest at the bottom (list follows the bottom)
   cleanupDays: 0, // delete saved output older than this many days on start; 0 = never
   keys: {}, // action id -> combo overrides
 };
