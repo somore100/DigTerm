@@ -24,6 +24,7 @@ const PREF_DEFAULTS = {
   autoSize: false, // smaller text when there are more terminals in a tab
   copyMode: "output", // output | command
   splitByEntry: true, // Analyze opens one command (true) or the whole run (false)
+  folderLinks: true, // Ctrl+click a folder name in the output to cd into it
   newestBottom: true, // Commands list: first command on top, newest at the bottom (list follows the bottom)
   cleanupDays: 0, // delete saved output older than this many days on start; 0 = never
   keys: {}, // action id -> combo overrides
@@ -98,6 +99,11 @@ function fmtPath(cwd, style) {
 
 // ---------------------------------------------------------------- panes
 
+let ctrlHeld = false; // folder links only light up while Ctrl is down
+document.addEventListener("keydown", (e) => { if (e.key === "Control" || e.key === "Meta") ctrlHeld = true; });
+document.addEventListener("keyup", (e) => { if (e.key === "Control" || e.key === "Meta") ctrlHeld = false; });
+window.addEventListener("blur", () => { ctrlHeld = false; });
+
 class Pane {
   constructor(tab, cwd, font) {
     this.tab = tab;
@@ -148,6 +154,7 @@ class Pane {
     this.term.open(this.termEl);
     this.fit.fit();
     this.buildFindBar();
+    this.registerFolderLinks();
 
     this.term.onData((data) => { if (this.id !== null) invoke("pty_write", { id: this.id, data }); });
     // debounced: the shell redraws its prompt on every size change, so only send the settled size
@@ -231,6 +238,48 @@ class Pane {
     this.runFile = info.run_file;
     panes.set(this.id, this);
     if (activePane === this) updateStatus();
+  }
+
+  // Ctrl+click on a word that is a folder (for example in `ls` output) runs `cd` into it.
+  registerFolderLinks() {
+    const cache = new Map(); // "cwd\0name" -> bool
+    let stamp = 0;
+    const quote = (n) => {
+      if (n === "~") return "~";
+      if (n.startsWith("~/")) return `~/'${n.slice(2).replaceAll("'", "'\\''")}'`;
+      return `'${n.replaceAll("'", "'\\''")}'`;
+    };
+    this.term.registerLinkProvider({
+      provideLinks: async (y, done) => {
+        if (!prefs.folderLinks || !ctrlHeld || this.id === null) return done(undefined);
+        const text = this.term.buffer.active.getLine(y - 1)?.translateToString(true) ?? "";
+        const words = [];
+        for (const m of text.matchAll(/\S+/g)) {
+          const name = m[0].replace(/[/*@=|]+$/, "");
+          if (!name || name === "." || name === ".." || name.length > 255) continue;
+          words.push({ name, x1: m.index + 1, x2: m.index + m[0].length });
+          if (words.length >= 64) break;
+        }
+        if (!words.length) return done(undefined);
+        if (Date.now() - stamp > 5000) { cache.clear(); stamp = Date.now(); }
+        const key = (n) => `${this.cwd}\0${n}`;
+        const unknown = [...new Set(words.map((w) => w.name))].filter((n) => !cache.has(key(n)));
+        if (unknown.length) {
+          try {
+            const res = await invoke("dirs_among", { cwd: this.cwd, names: unknown });
+            unknown.forEach((n, i) => cache.set(key(n), !!res[i]));
+          } catch { return done(undefined); }
+        }
+        done(words.filter((w) => cache.get(key(w.name))).map((w) => ({
+          range: { start: { x: w.x1, y }, end: { x: w.x2, y } },
+          text: w.name,
+          activate: (e) => {
+            if (!(e.ctrlKey || e.metaKey) || this.id === null) return;
+            invoke("pty_write", { id: this.id, data: `\x15cd -- ${quote(w.name)}\r` }); // Ctrl+U clears what was typed
+          },
+        })));
+      },
+    });
   }
 
   addBlock(b) {
@@ -821,6 +870,10 @@ function showPreferences() {
     };
 
     const fmtBytes = (n) => (n < 1048576 ? `${Math.round(n / 1024)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
+    const links = document.createElement("input");
+    links.type = "checkbox"; links.checked = prefs.folderLinks;
+    links.onchange = () => { prefs.folderLinks = links.checked; savePrefs(); };
+
     const split = document.createElement("input");
     split.type = "checkbox"; split.checked = prefs.splitByEntry;
     split.onchange = () => setSplitByEntry(split.checked);
@@ -861,6 +914,7 @@ function showPreferences() {
       heading("Tabs"), opt("Tab title", titleStyle),
       heading("Startup"), opt("Restore directories on start", restore),
       heading("Terminal"), opt("Scrollback lines (full output is always saved to disk)", scroll),
+      opt("Ctrl+click a folder name in the output to open it", links),
       heading("Commands list"), opt("Order", order),
       opt("Analyze one command at a time (off: Analyze opens the whole run)", split),
       heading("Saved output"), opt("Delete saved output older than (days, 0 = never)", days), opt("Disk used", cleanRow),

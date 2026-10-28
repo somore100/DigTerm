@@ -349,6 +349,31 @@ fn pty_cwd(state: State<'_, AppState>, id: u32) -> Option<String> {
     }
 }
 
+/// For each name, whether it is an existing folder. Relative names are looked up in `cwd`, `~` is the home folder.
+#[tauri::command]
+fn dirs_among(cwd: Option<String>, names: Vec<String>) -> Vec<bool> {
+    let home = home_dir();
+    names
+        .iter()
+        .take(256)
+        .map(|n| {
+            let path = if n == "~" || n.starts_with("~/") {
+                match &home {
+                    Some(h) => PathBuf::from(h).join(n.trim_start_matches('~').trim_start_matches('/')),
+                    None => return false,
+                }
+            } else {
+                PathBuf::from(n)
+            };
+            if path.is_absolute() {
+                path.is_dir()
+            } else {
+                cwd.as_ref().map_or(false, |c| Path::new(c).join(path).is_dir())
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn save_layout(app: AppHandle, json: String) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -1131,7 +1156,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, dirs_among, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
