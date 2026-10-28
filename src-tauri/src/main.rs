@@ -349,10 +349,34 @@ fn pty_cwd(state: State<'_, AppState>, id: u32) -> Option<String> {
     }
 }
 
-/// For each name, whether it is an existing folder. Relative names are looked up in `cwd`, `~` is the home folder.
+#[derive(Serialize)]
+struct PathInfo {
+    /// "dir", "text" (a file that looks like text), "file" (anything else) or "" (does not exist).
+    kind: &'static str,
+    /// Absolute path when it exists.
+    path: String,
+}
+
+/// True when the start of the file has no NUL bytes and is valid UTF-8 (a cut-off last character is fine).
+fn looks_like_text(path: &Path) -> bool {
+    let Ok(mut f) = File::open(path) else { return false };
+    let mut buf = [0u8; 4096];
+    let n = f.read(&mut buf).unwrap_or(0);
+    if buf[..n].contains(&0) {
+        return false;
+    }
+    match std::str::from_utf8(&buf[..n]) {
+        Ok(_) => true,
+        Err(e) => e.error_len().is_none(),
+    }
+}
+
+/// Looks up words from the terminal output: what each one is on disk. Relative names are looked up
+/// in `cwd`, `~` is the home folder.
 #[tauri::command]
-fn dirs_among(cwd: Option<String>, names: Vec<String>) -> Vec<bool> {
+fn path_info(cwd: Option<String>, names: Vec<String>) -> Vec<PathInfo> {
     let home = home_dir();
+    let none = || PathInfo { kind: "", path: String::new() };
     names
         .iter()
         .take(256)
@@ -360,18 +384,84 @@ fn dirs_among(cwd: Option<String>, names: Vec<String>) -> Vec<bool> {
             let path = if n == "~" || n.starts_with("~/") {
                 match &home {
                     Some(h) => PathBuf::from(h).join(n.trim_start_matches('~').trim_start_matches('/')),
-                    None => return false,
+                    None => return none(),
                 }
             } else {
                 PathBuf::from(n)
             };
-            if path.is_absolute() {
-                path.is_dir()
+            let full = if path.is_absolute() {
+                path
             } else {
-                cwd.as_ref().map_or(false, |c| Path::new(c).join(path).is_dir())
-            }
+                match &cwd {
+                    Some(c) => Path::new(c).join(path),
+                    None => return none(),
+                }
+            };
+            let kind = if full.is_dir() {
+                "dir"
+            } else if full.is_file() {
+                if looks_like_text(&full) { "text" } else { "file" }
+            } else {
+                return none();
+            };
+            let full = fs::canonicalize(&full).unwrap_or(full);
+            PathInfo { kind, path: full.to_string_lossy().into_owned() }
         })
         .collect()
+}
+
+/// Starts a command without waiting for it and reaps it in the background.
+fn spawn_detached(mut cmd: std::process::Command) -> Result<(), String> {
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Could not start the system opener: {e}"))?;
+    std::thread::spawn(move || {
+        let _ = child.wait(); // so it does not stay a zombie
+    });
+    Ok(())
+}
+
+/// Opens a file or folder with the system's default application.
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    if !Path::new(&path).exists() {
+        return Err("That path no longer exists.".into());
+    }
+    #[cfg(target_os = "macos")]
+    let mut cmd = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(&path);
+    spawn_detached(cmd)
+}
+
+/// Opens an http(s) link in the default browser. Anything else is refused.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("Only http and https links can be opened.".into());
+    }
+    #[cfg(target_os = "macos")]
+    let mut cmd = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(&url);
+    spawn_detached(cmd)
 }
 
 #[tauri::command]
@@ -1156,7 +1246,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, dirs_among, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
@@ -1384,6 +1474,34 @@ mod tests {
         assert!(has_word("segmentation fault (core dumped)", "core dumped"));
         assert!(!has_word("anything", ""));
         assert!(has_word("fehler: größe fehler", "fehler"));
+    }
+
+    #[test]
+    fn looks_like_text_tells_text_from_binary() {
+        let dir = std::env::temp_dir();
+        let t = dir.join(format!("digterm-test-text-{}.txt", std::process::id()));
+        let b = dir.join(format!("digterm-test-bin-{}.bin", std::process::id()));
+        fs::write(&t, "hello\nwörld\n").unwrap();
+        fs::write(&b, [0x89u8, b'P', b'N', b'G', 0, 1, 2]).unwrap();
+        assert!(looks_like_text(&t));
+        assert!(!looks_like_text(&b));
+        assert!(!looks_like_text(&dir.join("digterm-does-not-exist")));
+        let _ = fs::remove_file(&t);
+        let _ = fs::remove_file(&b);
+    }
+
+    #[test]
+    fn path_info_classifies_names() {
+        let base = std::env::temp_dir().join(format!("digterm-test-paths-{}", std::process::id()));
+        fs::create_dir_all(base.join("sub")).unwrap();
+        fs::write(base.join("a.log"), "x\n").unwrap();
+        fs::write(base.join("p.bin"), [0u8, 1, 2]).unwrap();
+        let cwd = Some(base.to_string_lossy().into_owned());
+        let names: Vec<String> = ["sub", "a.log", "p.bin", "nope"].iter().map(|s| s.to_string()).collect();
+        let kinds: Vec<&str> = path_info(cwd.clone(), names).iter().map(|i| i.kind).collect();
+        assert_eq!(kinds, vec!["dir", "text", "file", ""]);
+        assert!(path_info(None, vec!["relative".into()])[0].kind.is_empty());
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

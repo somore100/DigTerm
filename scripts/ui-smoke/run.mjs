@@ -85,6 +85,34 @@ chord("KeyT", "T", { ctrlKey: true, shiftKey: true });
 await wait(30);
 check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens a tab");
 
+// right-click menu on a selected folder name: its entries must be clickable and reach the backend
+{
+  globalThis.__selection = "docs";
+  const termEl = document.querySelector(".pane .pane-term");
+  const menuIsOpen = () => document.querySelector(".ctx-menu");
+  termEl.dispatchEvent(new w.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+  await wait(50);
+  check(menuIsOpen(), "right-click on a selected folder name opens the context menu");
+  const items = [...document.querySelectorAll(".ctx-menu button")];
+  const cd = items.find((b) => /cd/.test(b.textContent));
+  check(cd, "context menu offers cd for a folder");
+  if (cd) {
+    await wait(10); // listeners that close the menu are armed after a tick
+    // pressing the menu makes the terminal lose focus: a blur reaches window in the capture phase
+    termEl.dispatchEvent(new w.FocusEvent("blur"));
+    check(menuIsOpen(), "context menu stays open when the terminal loses focus");
+    // a real click is mousedown, mouseup, click; the menu must survive the mousedown
+    cd.dispatchEvent(new w.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    check(menuIsOpen(), "context menu stays open while the mouse is pressed on it");
+    cd.dispatchEvent(new w.MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+    cd.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await wait(20);
+    check(!menuIsOpen(), "context menu closes after a choice");
+    check(globalThis.__calls.some(([c, a]) => c === "pty_write" && a.data.includes("cd -- '/home/user/docs'")), "choosing cd types the cd command into the shell");
+  }
+  globalThis.__selection = "";
+}
+
 if (problems.length) {
   console.error(`UI smoke test FAILED (${problems.length}):\n` + problems.join("\n---\n"));
   process.exit(1);

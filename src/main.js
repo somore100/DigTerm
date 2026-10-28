@@ -104,6 +104,69 @@ document.addEventListener("keydown", (e) => { if (e.key === "Control" || e.key =
 document.addEventListener("keyup", (e) => { if (e.key === "Control" || e.key === "Meta") ctrlHeld = false; });
 window.addEventListener("blur", () => { ctrlHeld = false; });
 
+const IS_WIN = /Windows/i.test(navigator.userAgent);
+const shellQuote = (p) => (IS_WIN ? `"${p}"` : `'${p.replaceAll("'", "'\\''")}'`);
+
+// strips quotes and the markers `ls -F` appends (/ * @ = |) from a word of terminal output
+const cleanName = (w) => w.replace(/^(['"])(.*)\1$/, "$2").replace(/[/*@=|]+$/, "");
+
+// Words of one terminal line, with 1-based column ranges. Quoted names (ls prints 'My Folder') stay whole.
+function wordsOf(text) {
+  const out = [];
+  for (const m of text.matchAll(/'[^']*'|"[^"]*"|\S+/g)) {
+    const name = cleanName(m[0]);
+    if (!name || name === "." || name === ".." || name.length > 255) continue;
+    out.push({ name, x1: m.index + 1, x2: m.index + m[0].length });
+    if (out.length >= 64) break;
+  }
+  return out;
+}
+
+// http(s) links, and localhost addresses such as `localhost:5173` that dev servers print
+function asUrl(name) {
+  const t = name.replace(/[.,;:)\]'"]+$/, "");
+  if (/^https?:\/\/\S+$/i.test(t)) return t;
+  if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?(\/\S*)?$/i.test(t)) return `http://${t.replace(/^0\.0\.0\.0/, "localhost")}`;
+  return null;
+}
+
+// What to do with a path found in the output: cd | cat | viewer | browser | reveal (its folder in the file manager) | default (the system's default app).
+function openTarget(pane, info, action) {
+  if (action === "browser") return void invoke("open_url", { url: info.path }).catch((e) => alert(String(e)));
+  if (action === "reveal") return void invoke("open_path", { path: info.path.replace(/[\\/][^\\/]*$/, "") || "/" }).catch((e) => alert(String(e)));
+  if (action === "viewer") return openAnalyze({ label: `File: ${basename(info.path)}`, importPath: info.path });
+  if (action === "default") return void invoke("open_path", { path: info.path }).catch((e) => alert(String(e)));
+  if (pane.id === null) return;
+  const cmd = action === "cd" ? `cd -- ${shellQuote(info.path)}` : `${IS_WIN ? "type" : "cat --"} ${shellQuote(info.path)}`;
+  invoke("pty_write", { id: pane.id, data: `\x15${IS_WIN ? cmd.replace("cd -- ", "cd ") : cmd}\r` }); // Ctrl+U clears what was typed
+  pane.term.focus();
+}
+
+function showContextMenu(x, y, items) {
+  document.querySelectorAll(".ctx-menu").forEach((n) => n.remove());
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  for (const [label, fn] of items) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = () => { menu.remove(); fn(); };
+    menu.append(b);
+  }
+  document.body.append(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - r.width - 4))}px`;
+  menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`;
+  const off = (e) => {
+    if (e.type === "keydown" && e.key !== "Escape") return;
+    if (e.type === "mousedown" && menu.contains(e.target)) return; // let the click reach the button
+    // capturing on window also sees every element's blur (the terminal loses focus when you press the menu)
+    if (e.type === "blur" && e.target !== window) return;
+    menu.remove();
+    for (const t of ["mousedown", "keydown", "blur"]) window.removeEventListener(t, off, true);
+  };
+  setTimeout(() => { for (const t of ["mousedown", "keydown", "blur"]) window.addEventListener(t, off, true); }, 0);
+}
+
 class Pane {
   constructor(tab, cwd, font) {
     this.tab = tab;
@@ -240,46 +303,69 @@ class Pane {
     if (activePane === this) updateStatus();
   }
 
-  // Ctrl+click on a word that is a folder (for example in `ls` output) runs `cd` into it.
+  // Words in the output that are folders or files (for example in `ls` output): Ctrl+click opens them,
+  // right-click shows all choices. Looked up on disk relative to the terminal's current folder.
   registerFolderLinks() {
-    const cache = new Map(); // "cwd\0name" -> bool
+    const cache = new Map(); // "cwd\0name" -> {kind, path}
     let stamp = 0;
-    const quote = (n) => {
-      if (n === "~") return "~";
-      if (n.startsWith("~/")) return `~/'${n.slice(2).replaceAll("'", "'\\''")}'`;
-      return `'${n.replaceAll("'", "'\\''")}'`;
+    const key = (n) => `${this.cwd}\0${n}`;
+    const lookup = async (names) => {
+      if (Date.now() - stamp > 5000) { cache.clear(); stamp = Date.now(); }
+      const unknown = [...new Set(names)].filter((n) => !cache.has(key(n)) && !asUrl(n));
+      if (unknown.length) {
+        const res = await invoke("path_info", { cwd: this.cwd, names: unknown });
+        unknown.forEach((n, i) => cache.set(key(n), res[i]));
+      }
+      return names.map((n) => (asUrl(n) ? { kind: "url", path: asUrl(n) } : cache.get(key(n))));
     };
+
     this.term.registerLinkProvider({
       provideLinks: async (y, done) => {
         if (!prefs.folderLinks || !ctrlHeld || this.id === null) return done(undefined);
-        const text = this.term.buffer.active.getLine(y - 1)?.translateToString(true) ?? "";
-        const words = [];
-        for (const m of text.matchAll(/\S+/g)) {
-          const name = m[0].replace(/[/*@=|]+$/, "");
-          if (!name || name === "." || name === ".." || name.length > 255) continue;
-          words.push({ name, x1: m.index + 1, x2: m.index + m[0].length });
-          if (words.length >= 64) break;
-        }
+        const words = wordsOf(this.term.buffer.active.getLine(y - 1)?.translateToString(true) ?? "");
         if (!words.length) return done(undefined);
-        if (Date.now() - stamp > 5000) { cache.clear(); stamp = Date.now(); }
-        const key = (n) => `${this.cwd}\0${n}`;
-        const unknown = [...new Set(words.map((w) => w.name))].filter((n) => !cache.has(key(n)));
-        if (unknown.length) {
-          try {
-            const res = await invoke("dirs_among", { cwd: this.cwd, names: unknown });
-            unknown.forEach((n, i) => cache.set(key(n), !!res[i]));
-          } catch { return done(undefined); }
-        }
-        done(words.filter((w) => cache.get(key(w.name))).map((w) => ({
+        let infos;
+        try { infos = await lookup(words.map((w) => w.name)); } catch { return done(undefined); }
+        done(words.flatMap((w, i) => (infos[i]?.kind ? [{
           range: { start: { x: w.x1, y }, end: { x: w.x2, y } },
           text: w.name,
-          activate: (e) => {
-            if (!(e.ctrlKey || e.metaKey) || this.id === null) return;
-            invoke("pty_write", { id: this.id, data: `\x15cd -- ${quote(w.name)}\r` }); // Ctrl+U clears what was typed
-          },
-        })));
+          activate: (e) => { if (e.ctrlKey || e.metaKey) openTarget(this, infos[i], { dir: "cd", text: "viewer", url: "browser" }[infos[i].kind] ?? "default"); },
+        }] : [])));
       },
     });
+
+    this.termEl.addEventListener("contextmenu", async (e) => {
+      const name = this.targetAt(e);
+      const selected = this.term.getSelection();
+      if (!name && !selected) return;
+      e.preventDefault();
+      const items = [];
+      let info = null;
+      if (name && this.id !== null) {
+        try { info = (await lookup([name]))[0]; } catch {}
+      }
+      if (info?.kind === "url") items.push(["Open in browser", () => openTarget(this, info, "browser")]);
+      if (info?.kind === "dir") items.push(["Open folder here (cd)", () => openTarget(this, info, "cd")], ["Open in file manager", () => openTarget(this, info, "default")]);
+      if (info?.kind === "text") items.push(["Open in Digterm viewer", () => openTarget(this, info, "viewer")], ["Show in terminal (cat)", () => openTarget(this, info, "cat")], ["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
+      if (info?.kind === "file") items.push(["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
+      if (info?.kind) items.push([info.kind === "url" ? "Copy link" : "Copy path", () => navigator.clipboard.writeText(info.path)]);
+      if (selected) items.push(["Copy", () => navigator.clipboard.writeText(selected)]);
+      if (items.length) showContextMenu(e.clientX, e.clientY, items);
+    });
+  }
+
+  // The word under the mouse (or the selected text when it is a single line), without quotes.
+  targetAt(e) {
+    const sel = this.term.getSelection().trim();
+    if (sel && !sel.includes("\n") && sel.length < 512) return cleanName(sel);
+    const screen = this.termEl.querySelector(".xterm-screen");
+    if (!screen) return null;
+    const r = screen.getBoundingClientRect();
+    const col = Math.floor((e.clientX - r.left) / (r.width / this.term.cols));
+    const row = Math.floor((e.clientY - r.top) / (r.height / this.term.rows));
+    const buf = this.term.buffer.active;
+    const line = buf.getLine(buf.viewportY + row)?.translateToString(true);
+    return wordsOf(line ?? "").find((w) => col >= w.x1 - 1 && col <= w.x2 - 1)?.name ?? null;
   }
 
   addBlock(b) {
@@ -914,7 +1000,7 @@ function showPreferences() {
       heading("Tabs"), opt("Tab title", titleStyle),
       heading("Startup"), opt("Restore directories on start", restore),
       heading("Terminal"), opt("Scrollback lines (full output is always saved to disk)", scroll),
-      opt("Ctrl+click a folder name in the output to open it", links),
+      opt("Ctrl+click a folder or file name in the output to open it", links),
       heading("Commands list"), opt("Order", order),
       opt("Analyze one command at a time (off: Analyze opens the whole run)", split),
       heading("Saved output"), opt("Delete saved output older than (days, 0 = never)", days), opt("Disk used", cleanRow),
