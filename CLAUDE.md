@@ -1,7 +1,7 @@
 # Digterm: notes for working on this repo
 
 A terminal (Tauri 2 + xterm.js + portable-pty) with an analysis layer: per-command output blocks and a viewer for
-very large outputs. MIT licensed. Public repo: github.com/somore100/DigTerm. Version 0.1.0 (early development).
+very large outputs. MIT licensed. Public repo: github.com/somore100/DigTerm. Version 0.2.0 (early development).
 
 ## How the user and the assistant work together
 - The assistant's sandbox is Ubuntu and has **no C compiler, no `git`, no `sudo`**. It can edit files and run Node,

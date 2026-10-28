@@ -716,6 +716,33 @@ export async function openAnalyze(block) {
   document.addEventListener("keydown", onKey);
   root.querySelector(".an-close").onclick = close;
 
+  // Dragging selected text would start the browser's drag-and-drop ghost; the viewer has no use for it.
+  root.addEventListener("dragstart", (e) => e.preventDefault());
+
+  // Copying a mouse selection: build the text from the rows ourselves so every row ends in a newline
+  // (also folded rows) and line numbers and "×N" badges are left out.
+  body.addEventListener("copy", (e) => {
+    const s = window.getSelection();
+    if (!s || s.isCollapsed || !s.rangeCount) return;
+    const range = s.getRangeAt(0);
+    if (!body.contains(range.commonAncestorContainer)) return;
+    const part = (el) => {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      if (range.compareBoundaryPoints(Range.START_TO_START, r) > 0) r.setStart(range.startContainer, range.startOffset);
+      if (range.compareBoundaryPoints(Range.END_TO_END, r) < 0) r.setEnd(range.endContainer, range.endOffset);
+      return r.toString();
+    };
+    const lines = [];
+    for (const row of rows.querySelectorAll(".row")) {
+      if (!range.intersectsNode(row)) continue;
+      lines.push([...row.querySelectorAll(".tx")].filter((t) => range.intersectsNode(t)).map(part).join(""));
+    }
+    if (!lines.length) return;
+    e.clipboardData.setData("text/plain", lines.join("\n"));
+    e.preventDefault();
+  });
+
   // the sub-line width follows the viewer's width
   const resizeObs = new ResizeObserver(() => {
     const before = wrapW;

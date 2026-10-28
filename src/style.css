@@ -211,3 +211,4 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 #block-lists .block-list .block-head { display: flex; gap: 6px; min-width: 0; align-items: baseline; }
 #block-lists .block-list .cmd-num { font-weight: 600; opacity: 0.7; flex: none; }
 .an-sevnav { display: inline-flex; gap: 2px; }
+.an-body, .an-body * { -webkit-user-drag: none; }
