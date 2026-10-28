@@ -252,8 +252,13 @@ class Pane {
     const copy = document.createElement("button");
     copy.textContent = "Copy";
     const doCopy = async (mode) => {
-      const start = mode === "command" ? b.cmd_start : b.start;
-      const text = await invoke("read_block", { session: b.session, start, end: b.end });
+      let start = mode === "command" ? b.cmd_start : b.start;
+      let end = b.end;
+      if (!prefs.splitByEntry) { // split off: copy the whole run, not just this command
+        start = 0;
+        end = await invoke("session_len", { id: b.session });
+      }
+      const text = await invoke("read_block", { session: b.session, start, end });
       await navigator.clipboard.writeText(text.trimEnd());
       copy.textContent = "Copied";
       setTimeout(() => (copy.textContent = "Copy"), 1200);
@@ -283,7 +288,8 @@ class Pane {
       li.append(pop);
     };
     const analyze = document.createElement("button");
-    analyze.textContent = "Analyze";
+    analyze.className = "analyze-btn";
+    analyze.textContent = prefs.splitByEntry ? "Analyze" : "Analyze all";
     analyze.onclick = () => (prefs.splitByEntry ? openAnalyze(b) : analyzeFull(this));
     const buttons = document.createElement("span");
     buttons.append(analyze, copy, more);
@@ -317,6 +323,7 @@ function setSplitByEntry(v) {
   prefs.splitByEntry = v;
   savePrefs();
   $("split-entry").checked = v;
+  document.querySelectorAll(".analyze-btn").forEach((b) => (b.textContent = v ? "Analyze" : "Analyze all"));
 }
 $("split-entry").onchange = (e) => setSplitByEntry(e.target.checked);
 $("split-entry").checked = prefs.splitByEntry;
