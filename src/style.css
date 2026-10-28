@@ -22,7 +22,8 @@ body { display: flex; flex-direction: column; }
 #stage { flex: 1; min-width: 0; position: relative; }
 #blocks { width: var(--panel-w); flex-shrink: 0; overflow-y: auto; background: var(--bg3); border-left: 1px solid var(--line); padding: 8px; box-sizing: border-box; }
 #blocks h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.6; }
-#block-lists .block-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+#block-lists .block-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column-reverse; gap: 6px; }
+#block-lists.newest-bottom .block-list { flex-direction: column; }
 #block-lists .block-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; font-size: 13px; background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; }
 #block-lists .block-list .block-info { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
 #block-lists .block-list .cmd-text { color: var(--fg); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -198,3 +199,10 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 #menu .zoom-row button { width: 30px !important; justify-content: center; }
 .zoom-cap { flex: 1; font-size: 12px; opacity: 0.7; }
 .zoom-pct { min-width: 44px; text-align: center; }
+
+.dialog .history { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.dialog .hist-head { width: 100%; text-align: left; font: inherit; color: inherit; background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; cursor: pointer; }
+.dialog .hist-cmds { padding: 4px 0 4px 12px; font-size: 13px; }
+.dialog .hist-cmd { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 3px 0; }
+.dialog .hist-cmd span { font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dialog .hist-cmd button { font: inherit; font-size: 12px; color: inherit; background: var(--btn); border: 1px solid var(--line2); border-radius: 4px; padding: 2px 8px; cursor: pointer; flex: none; }

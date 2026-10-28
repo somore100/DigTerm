@@ -398,6 +398,77 @@ fn cleanup_runs(app: AppHandle, state: State<'_, AppState>, days: u64) -> Result
     Ok((n, bytes))
 }
 
+#[derive(Serialize)]
+struct RunInfo {
+    name: String,
+    size: u64,
+    /// Last modification, seconds since the Unix epoch.
+    modified: u64,
+    /// True while a terminal still writes to this file.
+    open: bool,
+}
+
+/// Saved output files of this and earlier sessions, newest first.
+#[tauri::command]
+fn list_runs(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<RunInfo>, String> {
+    let live: Vec<PathBuf> = state.sessions.lock().unwrap().values().map(|s| s.run_path.clone()).collect();
+    let mut out = Vec::new();
+    for (path, size, age) in run_files(&app)? {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        out.push(RunInfo { open: live.contains(&path), name, size, modified: now.saturating_sub(age) });
+    }
+    out.sort_by(|a, b| b.modified.cmp(&a.modified).then(b.name.cmp(&a.name)));
+    Ok(out)
+}
+
+/// Path of a saved output file by name; refuses anything that is not a plain `run-*.raw` name.
+fn run_path_by_name(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    if !(name.starts_with("run-") && name.ends_with(".raw")) || name.contains('/') || name.contains('\\') {
+        return Err("not a saved output file".into());
+    }
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("runs").join(name))
+}
+
+/// Finds the commands in a saved output file by running it through the same OSC 133 scanner
+/// as live output. Returns each block with its command text. Durations are not known (`ms` is 0).
+#[tauri::command]
+async fn scan_run(app: AppHandle, name: String) -> Result<Vec<(Block, String)>, String> {
+    let path = run_path_by_name(&app, &name)?;
+    let mut f = File::open(&path).map_err(|e| e.to_string())?;
+    let mut scanner = Scanner::new();
+    let mut blocks = Vec::new();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut offset = 0u64;
+    loop {
+        let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        scanner.feed(&buf[..n], offset, &mut |b| blocks.push(b));
+        offset += n as u64;
+    }
+    let mut out = Vec::with_capacity(blocks.len());
+    for b in blocks {
+        let len = b.start.saturating_sub(b.cmd_start).min(2000) as usize;
+        let mut cmd = vec![0u8; len];
+        f.seek(SeekFrom::Start(b.cmd_start)).map_err(|e| e.to_string())?;
+        f.read_exact(&mut cmd).map_err(|e| e.to_string())?;
+        out.push((b, strip_ansi(&cmd)));
+    }
+    Ok(out)
+}
+
+/// Opens a command's output from a saved file of an earlier session in the viewer.
+#[tauri::command]
+async fn analyze_open_run(app: AppHandle, state: State<'_, AppState>, name: String, start: u64, end: u64) -> Result<u64, String> {
+    if end < start {
+        return Err("bad range".into());
+    }
+    let path = run_path_by_name(&app, &name)?;
+    set_analysis(&state, path, start, end)
+}
+
 /// Size in bytes of a session's run file (for analysing its full output).
 #[tauri::command]
 fn session_len(state: State<'_, AppState>, id: u32) -> Result<u64, String> {
@@ -974,7 +1045,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }

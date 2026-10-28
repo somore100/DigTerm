@@ -47,6 +47,7 @@ export async function openAnalyze(block) {
   let total;
   try {
     if (block.importText !== undefined) total = await invoke("analyze_open_text", { text: block.importText });
+    else if (block.run) total = await invoke("analyze_open_run", { name: block.run, start: block.start, end: block.end });
     else if (block.importPath) total = await invoke("analyze_open_file", { path: block.importPath });
     else total = await invoke("analyze_open", { session: block.session, start: block.start, end: block.end });
   } catch (err) {

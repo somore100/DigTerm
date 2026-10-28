@@ -23,6 +23,7 @@ const PREF_DEFAULTS = {
   commandsHidden: false,
   autoSize: false, // smaller text when there are more terminals in a tab
   copyMode: "output", // output | command
+  newestBottom: false, // Commands list: newest command at the bottom (list follows the bottom)
   cleanupDays: 0, // delete saved output older than this many days on start; 0 = never
   keys: {}, // action id -> combo overrides
 };
@@ -286,7 +287,8 @@ class Pane {
     const buttons = document.createElement("span");
     buttons.append(analyze, copy, more);
     li.append(info, buttons);
-    this.blocksEl.prepend(li);
+    this.blocksEl.append(li); // order is done in CSS (column-reverse puts the newest on top)
+    if (prefs.newestBottom) scrollBlocksToEnd();
   }
 
   dispose() {
@@ -334,6 +336,15 @@ function layoutTab(tab) {
   applyAutoFonts(tab);
 }
 
+function applyCommandOrder() {
+  $("block-lists").classList.toggle("newest-bottom", prefs.newestBottom);
+  scrollBlocksToEnd();
+}
+function scrollBlocksToEnd() {
+  const el = $("blocks");
+  if (prefs.newestBottom) el.scrollTop = el.scrollHeight;
+}
+
 function focusPane(pane) {
   if (!pane) return;
   activePane = pane;
@@ -341,6 +352,7 @@ function focusPane(pane) {
   pane.tab.last = pane;
   for (const p of panes.values()) p.el.classList.toggle("focused", p === pane);
   for (const t of tabs) for (const p of t.panes) p.blocksEl.hidden = p !== pane;
+  scrollBlocksToEnd();
   pane.term.focus();
   updateStatus();
   const zl = document.getElementById("zoom-label");
@@ -783,6 +795,10 @@ function showPreferences() {
     };
 
     const fmtBytes = (n) => (n < 1048576 ? `${Math.round(n / 1024)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
+    const order = document.createElement("select");
+    for (const [v, l] of [[false, "Newest at the top"], [true, "Newest at the bottom (follows new commands)"]]) order.add(new Option(l, v, false, prefs.newestBottom === v));
+    order.onchange = () => { prefs.newestBottom = order.value === "true"; savePrefs(); applyCommandOrder(); };
+
     const days = document.createElement("input");
     days.type = "number"; days.min = 0; days.max = 3650; days.value = prefs.cleanupDays;
     days.onchange = () => { prefs.cleanupDays = Math.min(3650, Math.max(0, Math.floor(Number(days.value)) || 0)); savePrefs(); };
@@ -815,6 +831,7 @@ function showPreferences() {
       heading("Tabs"), opt("Tab title", titleStyle),
       heading("Startup"), opt("Restore directories on start", restore),
       heading("Terminal"), opt("Scrollback lines (full output is always saved to disk)", scroll),
+      heading("Commands list"), opt("Order", order),
       heading("Saved output"), opt("Delete saved output older than (days, 0 = never)", days), opt("Disk used", cleanRow),
     );
     const note = document.createElement("div");
@@ -889,6 +906,79 @@ function showShortcuts() {
   });
 }
 
+function showHistory() {
+  openDialog("History", (body) => {
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = "Saved output of this and earlier sessions. Click a session to see its commands. Delete old files under Preferences.";
+    const list = document.createElement("div");
+    list.className = "history";
+    const clear = document.createElement("button");
+    clear.textContent = "Clear history";
+    clear.title = "Deletes the saved output of all closed terminals; open terminals are kept";
+    clear.onclick = async () => {
+      if (!clear.armed) { // second click confirms
+        clear.armed = true;
+        clear.textContent = "Click again to delete all closed history";
+        setTimeout(() => { clear.armed = false; clear.textContent = "Clear history"; }, 4000);
+        return;
+      }
+      clear.armed = false;
+      clear.textContent = "Clear history";
+      try { await invoke("cleanup_runs", { days: 0 }); } catch (e) { list.textContent = String(e); return; }
+      load();
+    };
+    body.append(note, clear, list);
+    const fmtSize = (n) => (n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`);
+    const addRun = (r) => {
+      const row = document.createElement("div");
+      row.className = "hist-run";
+      const head = document.createElement("button");
+      head.className = "hist-head";
+      head.textContent = `${new Date(r.modified * 1000).toLocaleString()} · ${fmtSize(r.size)}${r.open ? " · open now" : ""}`;
+      const cmds = document.createElement("div");
+      cmds.className = "hist-cmds";
+      cmds.hidden = true;
+      let loaded = false;
+      head.onclick = async () => {
+        cmds.hidden = !cmds.hidden;
+        if (cmds.hidden || loaded) return;
+        loaded = true;
+        cmds.textContent = "Reading…";
+        try {
+          const found = await invoke("scan_run", { name: r.name });
+          cmds.replaceChildren();
+          if (!found.length) cmds.textContent = "No commands recorded in this file.";
+          for (const [b, text] of found.reverse()) {
+            const line = document.createElement("div");
+            line.className = "hist-cmd";
+            const label = document.createElement("span");
+            const c = text.split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
+            label.textContent = `${c || "(unknown command)"}  ·  ${b.lines.toLocaleString()} lines · exit ${b.exit ?? "?"}`;
+            label.title = c;
+            const open = document.createElement("button");
+            open.textContent = "Analyze";
+            open.onclick = () => { closeDialog(); openAnalyze({ run: r.name, start: b.start, end: b.end, label: c || `Command #${b.id}` }); };
+            line.append(label, open);
+            cmds.append(line);
+          }
+        } catch (e) {
+          cmds.textContent = String(e);
+          loaded = false;
+        }
+      };
+      row.append(head, cmds);
+      list.append(row);
+    };
+    const load = () => invoke("list_runs").then((runs) => {
+      list.replaceChildren();
+      if (!runs.length) list.textContent = "No saved output yet.";
+      runs.forEach(addRun);
+    }).catch((e) => { list.textContent = String(e); });
+    load();
+  });
+}
+
 function showAbout() {
   openDialog("About", (body) => {
     const wrap = document.createElement("div");
@@ -952,6 +1042,7 @@ function renderMenu() {
   item(prefs.commandsHidden ? "Show command list" : "Hide command list", "commands", () => setCommandsHidden(!prefs.commandsHidden));
   item("Analyze full output of this terminal", null, () => analyzeFull(activePane));
   item("Analyze pasted text…", "analyzeText", showPasteDialog);
+  item("History of earlier sessions…", null, showHistory);
   sep();
   item("Fullscreen", "fullscreen", toggleFullscreen);
   sep();
@@ -1013,6 +1104,7 @@ await listen("pty-exit", (e) => {
 
 // ---------------------------------------------------------------- start
 
+applyCommandOrder();
 if (prefs.cleanupDays > 0) invoke("cleanup_runs", { days: prefs.cleanupDays }).catch(() => {});
 
 new ResizeObserver(() => tabs.forEach(layoutTab)).observe($("stage"));
