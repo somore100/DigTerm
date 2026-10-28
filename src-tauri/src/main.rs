@@ -1082,3 +1082,236 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const A: &[u8] = b"\x1b]133;A\x07";
+    const B: &[u8] = b"\x1b]133;B\x07";
+    const C: &[u8] = b"\x1b]133;C\x07";
+
+    fn cat(parts: &[&[u8]]) -> Vec<u8> {
+        parts.concat()
+    }
+
+    fn d(code: &str) -> Vec<u8> {
+        format!("\x1b]133;D;{code}\x07").into_bytes()
+    }
+
+    /// One command as the shell integration prints it: prompt, typed text, output, finish marker.
+    fn command(typed: &str, output: &str, code: &str) -> Vec<u8> {
+        cat(&[A, b"$ ", B, typed.as_bytes(), b"\r\n", C, output.as_bytes(), &d(code)])
+    }
+
+    type Row = (u32, u64, u64, u64, u64, u64, Option<i32>);
+
+    fn scan(data: &[u8], chunk: usize) -> Vec<Row> {
+        let mut sc = Scanner::new();
+        let mut out = Vec::new();
+        let mut base = 0u64;
+        for part in data.chunks(chunk) {
+            sc.feed(part, base, &mut |b| out.push((b.id, b.cmd_start, b.start, b.end, b.lines, 0, b.exit)));
+            base += part.len() as u64;
+        }
+        out
+    }
+
+    #[test]
+    fn scanner_finds_one_command() {
+        let data = command("ls", "a\nb\n", "0");
+        let rows = scan(&data, data.len());
+        assert_eq!(rows.len(), 1);
+        let (id, cmd_start, start, end, lines, _, exit) = rows[0];
+        assert_eq!(id, 1);
+        assert_eq!(exit, Some(0));
+        assert_eq!(lines, 2);
+        assert_eq!(&data[start as usize..end as usize], b"a\nb\n");
+        assert_eq!(&data[cmd_start as usize..start as usize - C.len()], b"ls\r\n");
+    }
+
+    #[test]
+    fn scanner_numbers_commands_and_keeps_exit_codes() {
+        let data = [command("true", "", "0"), command("false", "boom\n", "1"), command("x", "", "130")].concat();
+        let rows = scan(&data, data.len());
+        let ids: Vec<u32> = rows.iter().map(|r| r.0).collect();
+        let exits: Vec<Option<i32>> = rows.iter().map(|r| r.6).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert_eq!(exits, vec![Some(0), Some(1), Some(130)]);
+        assert_eq!(rows[0].4, 0);
+        assert_eq!(rows[1].4, 1);
+    }
+
+    #[test]
+    fn scanner_gives_same_result_for_any_chunk_size() {
+        let data = [command("echo hi", "hi\n", "0"), command("seq 3", "1\n2\n3\n", "0")].concat();
+        let whole = scan(&data, data.len());
+        for size in [1, 2, 3, 5, 7, 64] {
+            assert_eq!(scan(&data, size), whole, "chunk size {size}");
+        }
+    }
+
+    #[test]
+    fn scanner_accepts_string_terminator_and_missing_exit() {
+        let data = cat(&[A, B, b"x\r\n", C, b"out\n", b"\x1b]133;D;7\x1b\\", A, B, b"y\r\n", C, b"\x1b]133;D\x07"]);
+        let rows = scan(&data, data.len());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].6, Some(7));
+        assert_eq!(&data[rows[0].2 as usize..rows[0].3 as usize], b"out\n");
+        assert_eq!(rows[1].6, None);
+    }
+
+    #[test]
+    fn scanner_ignores_output_without_a_finished_command() {
+        let data = cat(&[A, B, b"sleep 100\r\n", C, b"partial\n"]);
+        assert!(scan(&data, data.len()).is_empty());
+        // a finish marker with no start marker emits nothing and does not panic
+        assert!(scan(&d("0"), 1).is_empty());
+    }
+
+    #[test]
+    fn scanner_ignores_other_escape_sequences() {
+        let data = cat(&[A, B, b"ls\r\n", C, b"\x1b[31mred\x1b[0m\n", b"\x1b]0;title\x07", &d("0")]);
+        let rows = scan(&data, 3);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].4, 1);
+        assert_eq!(rows[0].6, Some(0));
+    }
+
+    #[test]
+    fn strip_ansi_removes_colors_and_titles() {
+        assert_eq!(strip_ansi(b"\x1b[1;31mred\x1b[0m text"), "red text");
+        assert_eq!(strip_ansi(b"\x1b]0;title\x07x"), "x");
+        assert_eq!(strip_ansi(b"\x1b]0;title\x1b\\x"), "x");
+        assert_eq!(strip_ansi(b"\x1b]133;A\x07$ "), "$ ");
+    }
+
+    #[test]
+    fn strip_ansi_keeps_final_text_of_carriage_return_rewrites() {
+        assert_eq!(strip_ansi(b"10%\r50%\r100%\nnext"), "100%\nnext");
+        assert_eq!(strip_ansi(b"a\r\nb\r\n"), "a\nb\n");
+    }
+
+    #[test]
+    fn strip_ansi_survives_truncated_input() {
+        assert_eq!(strip_ansi(b"ab\x1b"), "ab");
+        assert_eq!(strip_ansi(b"ab\x1b["), "ab");
+        assert_eq!(strip_ansi(b"ab\x1b]0;never ends"), "ab");
+        assert_eq!(strip_ansi(b""), "");
+        assert!(strip_ansi(b"ok \xff\xfe").starts_with("ok "));
+    }
+
+    fn toks(line: &str) -> Vec<(bool, String)> {
+        tokenize(line)
+            .iter()
+            .map(|t| match t {
+                Tok::Text(s) => (false, s.to_string()),
+                Tok::Num(s) => (true, s.to_string()),
+            })
+            .collect()
+    }
+
+    fn nums(line: &str) -> Vec<String> {
+        toks(line).into_iter().filter(|t| t.0).map(|t| t.1).collect()
+    }
+
+    #[test]
+    fn tokenize_splits_standalone_numbers() {
+        assert_eq!(
+            toks("item 12 of 40"),
+            vec![
+                (false, "item ".to_string()),
+                (true, "12".to_string()),
+                (false, " of ".to_string()),
+                (true, "40".to_string()),
+                (false, String::new())
+            ]
+        );
+        assert_eq!(nums("5"), vec!["5"]);
+        assert_eq!(nums("no digits here"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn tokenize_keeps_digits_glued_to_letters_literal() {
+        assert!(nums("/dev/sda1").is_empty());
+        assert!(nums("v2 build").is_empty());
+        assert!(nums("a_1 b_22").is_empty());
+        assert!(nums("0xdeadbeef 3f").is_empty());
+        assert_eq!(nums("sda1 42"), vec!["42"]);
+    }
+
+    #[test]
+    fn tokenize_limits_number_length_and_handles_unicode() {
+        assert_eq!(nums("n 123456789012345678 x"), vec!["123456789012345678"]); // 18 digits
+        assert!(nums("n 1234567890123456789 x").is_empty()); // 19 digits would not fit an i64 safely
+        assert_eq!(nums("größe 7 äö 8"), vec!["7", "8"]);
+    }
+
+    #[test]
+    fn pattern_of_replaces_numbers() {
+        assert_eq!(pattern_of("item 12 of 40"), "item # of #");
+        assert_eq!(pattern_of("item 13 of 40"), pattern_of("item 12 of 40"));
+        assert_ne!(pattern_of("sda1"), pattern_of("sda2"));
+    }
+
+    /// Runs `f` on an Analysis built from `text` (a real temp file, as in the app).
+    fn with_analysis<T>(text: &str, f: impl FnOnce(&Analysis) -> T) -> T {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!("digterm-test-{}-{}.txt", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        fs::write(&path, text).unwrap();
+        let len = text.len() as u64;
+        let starts = index_file(&path, 0, len).unwrap();
+        let a = Analysis { path: path.clone(), starts, end: len, ends: None };
+        let out = f(&a);
+        let _ = fs::remove_file(&path);
+        out
+    }
+
+    fn groups_of(text: &str) -> Vec<(u64, u64, Option<String>)> {
+        with_analysis(text, |a| group_fields(a).unwrap().into_iter().map(|g| (g.first, g.count, g.summary)).collect())
+    }
+
+    #[test]
+    fn group_fields_folds_lines_that_differ_in_one_word() {
+        let g = groups_of("user alice logged in\nuser bob logged in\nuser carol logged in\nsomething else entirely now\n");
+        assert_eq!(g.len(), 1);
+        assert_eq!((g[0].0, g[0].1), (0, 3));
+        let s = g[0].2.clone().expect("a summary for lines with a varying word");
+        assert!(s.starts_with("user "), "{s}");
+        assert!(s.ends_with(" logged in"), "{s}");
+    }
+
+    #[test]
+    fn group_fields_reports_exact_repeats_without_summary() {
+        let g = groups_of("same line\nsame line\nother\n");
+        assert_eq!(g, vec![(0, 2, None)]);
+    }
+
+    #[test]
+    fn group_fields_does_not_group_unrelated_lines() {
+        assert!(groups_of("a b\nc d\ne f\n").is_empty());
+        assert!(groups_of("one two three\nonly two\n").is_empty());
+        assert!(groups_of("").is_empty());
+    }
+
+    #[test]
+    fn analysis_reads_contiguous_lines() {
+        with_analysis("one\ntwo\nthree", |a| {
+            assert_eq!(a.starts.len(), 3);
+            assert_eq!(a.read(0, 3).unwrap(), vec!["one", "two", "three"]);
+            assert_eq!(a.read(1, 2).unwrap(), vec!["two"]);
+            assert_eq!(a.read(2, 99).unwrap(), vec!["three"]);
+            assert!(a.read(3, 3).unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn analysis_reads_lines_from_separate_ranges() {
+        // "AAA\n" and "BBB\n" with a prompt and typed command between them that must not appear
+        with_analysis("AAA\n$ ls\nBBB\n", |a| {
+            let gapped = Analysis { path: a.path.clone(), starts: vec![0, 9], end: 13, ends: Some(vec![4, 13]) };
+            assert_eq!(gapped.read(0, 2).unwrap(), vec!["AAA", "BBB"]);
+            assert_eq!(gapped.read(1, 2).unwrap(), vec!["BBB"]);
+        });
+    }
+}
