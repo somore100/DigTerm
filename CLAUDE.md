@@ -20,6 +20,10 @@ very large outputs. MIT licensed. Public repo: github.com/somore100/DigTerm. Ver
 ## Layout
 - `src-tauri/src/main.rs`: everything in Rust. Sessions (PTY + run file), the OSC 133 `Scanner` that finds each command's
   byte range, `analyze_*` commands (line index, lines, search, folding groups, patterns, lengths), layout save/load.
+  Also: `list_runs`/`scan_run`/`analyze_open_run` (history of earlier sessions), `runs_usage`/`cleanup_runs`,
+  `analyze_open_ranges` (several output ranges as one view, used by "Hide commands"), `analyze_severity` (error and
+  warning lines), `path_info`/`open_path`/`open_url` (Ctrl+click and the right-click menu). `cargo test` runs the unit
+  tests at the bottom of the file (Scanner, strip_ansi, tokenize, group_fields, Analysis, has_word, path_info).
 - `src-tauri/shell/`: bash and zsh integration scripts (print OSC 133 markers). Loaded automatically.
 - `src/main.js`: tabs, panes (`Pane` class), overview, menu, preferences, shortcuts, dialogs, zoom, persistence.
 - `src/analyze.js`: the viewer (virtualized rows, folding model, wrapping into sub-lines, caret, patterns, highlight).
@@ -37,7 +41,13 @@ very large outputs. MIT licensed. Public repo: github.com/somore100/DigTerm. Ver
   in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json` (and the About text in `src/main.js`) equal.
 
 ## Next up (see README roadmap)
-Command text and duration in the Commands list; history of earlier sessions and cleanup of old run files; jump between
-errors and severity filter; masking of sensitive details on export; compact view (squeeze spaces, shorten long tokens
-and repeated path prefixes); multi-line block folding; Ctrl+click folders; `command | digterm`; presets; run comparison.
-Rust unit tests for `Scanner`, `tokenize`, `group_fields` and `strip_ansi` are wanted but not written yet.
+Masking of sensitive details on export; compact view (squeeze spaces, shorten long tokens and repeated path prefixes);
+multi-line block folding; `command | digterm`; presets; run comparison. Also wanted: `cargo test` in CI, showing a
+command that is still running in the Commands list, remembering each command's folder so Ctrl+click on old output
+resolves correctly, and trying everything on Windows and macOS.
+
+## Testing notes
+- `npm run test:ui` also checks the right-click menu (it must survive mousedown and blur, and `cd` must reach the shell).
+  The stubs in `scripts/ui-smoke/stubs/` record every `invoke` in `globalThis.__calls`.
+- A menu or popup that listens for `blur` or `mousedown` on `window` in the capture phase also sees every element's
+  events: ignore events whose target is not the window or is inside the popup.

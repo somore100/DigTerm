@@ -6,7 +6,7 @@ Digterm is a normal terminal (your own shell; `vim`, `ssh` and `htop` all work) 
 Everything a command prints is also saved to disk unchanged, so nothing is lost to scrollback limits, and you can
 open any command's output in a viewer built for very large outputs.
 
-> **Status:** early development (pre-0.1). Linux is the primary platform. Windows and macOS builds are
+> **Status:** early development (0.2). Linux is the primary platform. Windows and macOS builds are
 > produced by CI but are not finished yet (see [Platform support](#platform-support)). Not yet code-signed.
 
 ## Why Digterm?
@@ -34,9 +34,24 @@ open any command's output in a viewer built for very large outputs.
 - Every shortcut can be rebound (Ctrl+Shift+?).
 
 **Per-command output blocks**
-- Each command you run becomes an entry in the Commands panel with its line count and exit code.
+- Each command you run becomes a numbered entry in the Commands panel (1., 2., 3. …) showing the command, its line
+  count, how long it took and its exit code.
 - **Copy** takes the output only, or the command and its output (choose with the ▾ button).
 - **Analyze** opens that command's output in the viewer.
+- **Split by entry** (checkbox above the list, default set in Preferences): when off, Analyze and Copy work on the
+  whole run, so several pasted commands come out together. In the whole-run viewer, **Hide commands** leaves out the
+  prompts and typed commands and shows only the output.
+- The list can show the newest command at the top or at the bottom (Preferences). At the bottom it follows new commands.
+- **History of earlier sessions** (menu): browse the saved output of earlier sessions, open any command in the viewer,
+  or clear the history. Old saved output can also be deleted automatically after a number of days (Preferences, off by
+  default), and the disk space it uses is shown there.
+
+**Files, folders and links in the output**
+- **Ctrl+click** a folder name (for example in `ls` output) to `cd` into it, a text file to open it in the viewer, any
+  other file in its default application, and a `http(s)` or `localhost:port` link in the browser.
+- **Right-click** the same names (or select one first) for all choices: open folder here, open in file manager, open in
+  the viewer, show in the terminal (`cat`), open with the default app, show in file manager, open in browser, copy path.
+- Can be switched off in Preferences. Names are looked up in the terminal's current folder.
 
 **Output viewer**
 - Opens outputs of millions of lines instantly: only the visible lines are ever loaded.
@@ -47,6 +62,9 @@ open any command's output in a viewer built for very large outputs.
   - repeats with number patterns: `item ⟨1…5000, +1⟩ ×5,000`
   - repeats with word/field patterns: `user ⟨alice ×50, bob ×50⟩ failed to log in ×100`
   - always shows both counts, for example `15,009 lines · 12 after collapsing`
+- **Errors:** jump to the next or previous error line with the ▲ ▼ buttons or F8 / Shift+F8, or show only error lines, or
+  only warning and error lines (everything else collapses into `⋯ N lines hidden` rows). Uses the same word lists as the
+  highlighting.
 - Zoom with Ctrl +/−/0 or Ctrl+wheel.
 
 **Privacy:** everything stays on your machine. Nothing is uploaded, and no network access is needed.
@@ -126,17 +144,19 @@ On Debian or Ubuntu use the equivalent `-dev` packages from the
 
 Roughly in the order I plan to do them. Nothing here is promised, and the order may change.
 
+**Done in 0.2**
+- Command text, duration and numbering in the Commands list; history of earlier sessions and cleanup of old saved
+  output; jumping between errors and a severity filter; Ctrl+click and right-click on folders, files and links;
+  whole-run analysis and copy; Rust unit tests.
+
 **Next**
-- Show the command itself (and how long it took) in the Commands list, not just its line count and exit code.
-- History: reopen the output of earlier sessions after a restart, and clean up old saved output (retention limits).
-- Jump between errors and warnings, and filter the viewer by severity.
 - Export or copy a viewer selection with sensitive details (usernames, IP addresses, paths) masked.
 - Step through a pattern's lines with ▲ ▼ buttons, and group by words and ids as well as numbers.
 
 **Then**
 - Folding of repeating multi-line blocks.
 - Compact view: squeeze runs of spaces, shorten very long words (ids, hashes) and repeated path prefixes, all view-only.
-- Ctrl+click a folder or `file:line` in the output to `cd` there or open it.
+- Ctrl+click on `file:line` in the output to open it at that line.
 - `command | digterm` to send output from any other terminal straight into the viewer.
 - Follow a running command's output live in the viewer.
 - Diagnostic command presets (read-only, documented, human-editable), with a clear explanation before anything needs elevated privileges.
