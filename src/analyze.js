@@ -45,8 +45,11 @@ function buildHighlighter(s) {
 
 export async function openAnalyze(block) {
   let total;
+  // whole-run view: optionally only the output of each command, without prompts and typed commands
+  const hideCmd = !!block.whole && !!block.allRanges?.length && loadSettings().hideCmd;
   try {
-    if (block.importText !== undefined) total = await invoke("analyze_open_text", { text: block.importText });
+    if (hideCmd) total = await invoke("analyze_open_ranges", { session: block.session, ranges: block.allRanges });
+    else if (block.importText !== undefined) total = await invoke("analyze_open_text", { text: block.importText });
     else if (block.run) total = await invoke("analyze_open_run", { name: block.run, start: block.start, end: block.end });
     else if (block.importPath) total = await invoke("analyze_open_file", { path: block.importPath });
     else total = await invoke("analyze_open", { session: block.session, start: block.start, end: block.end });
@@ -70,6 +73,7 @@ export async function openAnalyze(block) {
         <option value="numbers">Fold repeats + number patterns</option>
         <option value="fields">Fold repeats + word/field patterns</option>
       </select>
+      <label class="an-toggle" title="Show only each command's output, without the prompts and typed commands" hidden><input type="checkbox" class="an-hide-cmd" /> Hide commands</label>
       <label class="an-toggle"><input type="checkbox" class="an-hl-on" /> Highlight</label>
       <label class="an-toggle" title="Show long lines as indented sub-lines instead of scrolling sideways"><input type="checkbox" class="an-wrap" /> Wrap long lines</label>
       <button class="an-hl-edit" title="Edit highlight words">Words…</button>
@@ -114,6 +118,17 @@ export async function openAnalyze(block) {
   const copyAllEl = root.querySelector(".an-copy-all");
   const wrapEl = root.querySelector(".an-wrap");
   wrapEl.checked = settings.wrap;
+  const hideEl = root.querySelector(".an-hide-cmd");
+  if (block.whole && block.allRanges?.length) {
+    hideEl.parentElement.hidden = false;
+    hideEl.checked = hideCmd;
+    hideEl.onchange = () => {
+      settings.hideCmd = hideEl.checked;
+      saveSettings(settings);
+      close();
+      openAnalyze(block); // reopen with the new setting
+    };
+  }
 
   const cache = new Map();
   let matches = [];

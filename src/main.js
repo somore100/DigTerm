@@ -106,6 +106,7 @@ class Pane {
     this.id = null;
     this.cwd = cwd ?? null;
     this.lines = 0;
+    this.blocks = []; // finished commands, in order
     this.runFile = "";
 
     this.el = document.createElement("div");
@@ -233,10 +234,12 @@ class Pane {
   }
 
   addBlock(b) {
+    this.blocks.push(b);
+    const num = this.blocks.length;
     const li = document.createElement("li");
     const label = document.createElement("span");
     label.className = b.exit === 0 ? "ok" : "fail";
-    label.textContent = `#${b.id} · ${b.lines.toLocaleString()} lines · ${formatDuration(b.ms)} · exit ${b.exit ?? "?"}`;
+    label.textContent = `${b.lines.toLocaleString()} lines · ${formatDuration(b.ms)} · exit ${b.exit ?? "?"}`;
     const cmdText = document.createElement("span");
     cmdText.className = "cmd-text";
     invoke("read_block", { session: b.session, start: b.cmd_start, end: b.start })
@@ -248,7 +251,13 @@ class Pane {
       .catch(() => {});
     const info = document.createElement("span");
     info.className = "block-info";
-    info.append(cmdText, label);
+    const numEl = document.createElement("span");
+    numEl.className = "cmd-num";
+    numEl.textContent = `${num}.`;
+    const head = document.createElement("span");
+    head.className = "block-head";
+    head.append(numEl, cmdText);
+    info.append(head, label);
     const copy = document.createElement("button");
     copy.textContent = "Copy";
     const doCopy = async (mode) => {
@@ -316,7 +325,8 @@ function formatDuration(ms) {
 async function analyzeFull(pane) {
   if (!pane || pane.id === null) return;
   const end = await invoke("session_len", { id: pane.id });
-  if (end > 0) openAnalyze({ session: pane.id, id: "all", label: "Full output of this terminal", start: 0, end });
+  const allRanges = pane.blocks.map((b) => [b.start, b.end]);
+  if (end > 0) openAnalyze({ session: pane.id, id: "all", label: "Full output of this terminal", start: 0, end, whole: true, allRanges });
 }
 
 function setSplitByEntry(v) {

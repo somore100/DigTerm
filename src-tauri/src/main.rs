@@ -33,16 +33,26 @@ struct Analysis {
     path: PathBuf,
     starts: Vec<u64>, // absolute file offset of each line start
     end: u64,
+    /// Absolute end of each line, only when the lines come from several separate ranges (gaps between them).
+    ends: Option<Vec<u64>>,
 }
 
 impl Analysis {
+    fn line_end(&self, i: usize) -> u64 {
+        match &self.ends {
+            Some(e) => e[i],
+            None if i + 1 < self.starts.len() => self.starts[i + 1],
+            None => self.end,
+        }
+    }
+
     fn read(&self, from: usize, to: usize) -> Result<Vec<String>, String> {
         let to = to.min(self.starts.len());
         if from >= to {
             return Ok(Vec::new());
         }
         let base = self.starts[from];
-        let stop = if to < self.starts.len() { self.starts[to] } else { self.end };
+        let stop = self.line_end(to - 1);
         let mut f = File::open(&self.path).map_err(|e| e.to_string())?;
         f.seek(SeekFrom::Start(base)).map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; (stop - base) as usize];
@@ -50,7 +60,7 @@ impl Analysis {
         let mut out = Vec::with_capacity(to - from);
         for i in from..to {
             let s = (self.starts[i] - base) as usize;
-            let mut e = ((if i + 1 < self.starts.len() { self.starts[i + 1] } else { self.end }) - base) as usize;
+            let mut e = (self.line_end(i) - base) as usize;
             if e > s && buf[e - 1] == b'\n' {
                 e -= 1;
             }
@@ -525,7 +535,7 @@ fn index_file(path: &Path, start: u64, end: u64) -> Result<Vec<u64>, String> {
 fn set_analysis(state: &State<'_, AppState>, path: PathBuf, start: u64, end: u64) -> Result<u64, String> {
     let starts = index_file(&path, start, end)?;
     let n = starts.len() as u64;
-    *state.analysis.lock().unwrap() = Some(Arc::new(Analysis { path, starts, end }));
+    *state.analysis.lock().unwrap() = Some(Arc::new(Analysis { path, starts, end, ends: None }));
     Ok(n)
 }
 
@@ -537,6 +547,29 @@ async fn analyze_open(state: State<'_, AppState>, session: u32, start: u64, end:
     }
     let path = session_path(&state, session)?;
     set_analysis(&state, path, start, end)
+}
+
+/// Opens several output ranges of a session's run file as one view, leaving out what lies between
+/// them (prompts and typed commands).
+#[tauri::command]
+async fn analyze_open_ranges(state: State<'_, AppState>, session: u32, ranges: Vec<(u64, u64)>) -> Result<u64, String> {
+    let path = session_path(&state, session)?;
+    let mut starts = Vec::new();
+    let mut ends = Vec::new();
+    for &(from, to) in &ranges {
+        if to < from {
+            return Err("bad range".into());
+        }
+        let seg = index_file(&path, from, to)?;
+        for (i, &st) in seg.iter().enumerate() {
+            starts.push(st);
+            ends.push(seg.get(i + 1).copied().unwrap_or(to));
+        }
+    }
+    let n = starts.len() as u64;
+    let end = ends.last().copied().unwrap_or(0);
+    *state.analysis.lock().unwrap() = Some(Arc::new(Analysis { path, starts, end, ends: Some(ends) }));
+    Ok(n)
 }
 
 /// Analyzes text pasted by the user (for example a log copied from another terminal).
@@ -1045,7 +1078,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }

@@ -208,3 +208,5 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 .dialog .hist-cmd button { font: inherit; font-size: 12px; color: inherit; background: var(--btn); border: 1px solid var(--line2); border-radius: 4px; padding: 2px 8px; cursor: pointer; flex: none; }
 
 #split-label { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 0 0 8px; cursor: pointer; opacity: 0.8; }
+#block-lists .block-list .block-head { display: flex; gap: 6px; min-width: 0; align-items: baseline; }
+#block-lists .block-list .cmd-num { font-weight: 600; opacity: 0.7; flex: none; }
