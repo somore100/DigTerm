@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { maskCopy, loadMask, saveMask, MASK_KINDS } from "./mask.js";
+import { copiedToast } from "./toast.js";
 
 let ROW = 18;
 
@@ -503,6 +504,7 @@ export async function openAnalyze(block) {
 
   async function copyText(button, getText) {
     await navigator.clipboard.writeText(maskCopy(await getText()));
+    copiedToast();
     const old = button.textContent;
     button.textContent = loadMask().on ? "Copied (masked)" : "Copied";
     setTimeout(() => (button.textContent = old), 1200);
@@ -766,6 +768,7 @@ export async function openAnalyze(block) {
     }
     if (!lines.length) return;
     e.clipboardData.setData("text/plain", maskCopy(lines.join("\n")));
+    copiedToast();
     e.preventDefault();
   });
 

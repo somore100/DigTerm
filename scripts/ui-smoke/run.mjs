@@ -118,6 +118,7 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
     await wait(30);
     check(copied?.startsWith("ssh <email-1> from <ip-1>, password=<secret>, home /home/<user>/x\n"), `viewer copy is masked: got ${JSON.stringify(copied)}`);
   }
+  check(document.querySelector(".toast.show")?.textContent === "Copied (masked)", "a note appears after copying");
   globalThis.__lines = null;
   document.querySelector("#analyze .an-close")?.click();
   document.getElementById("clear-selected").click();

@@ -9,6 +9,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
+import { toast, copiedToast } from "./toast.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -352,8 +353,8 @@ class Pane {
       if (info?.kind === "dir") items.push(["Open folder here (cd)", () => openTarget(this, info, "cd")], ["Open in file manager", () => openTarget(this, info, "default")]);
       if (info?.kind === "text") items.push(["Open in Digterm viewer", () => openTarget(this, info, "viewer")], ["Show in terminal (cat)", () => openTarget(this, info, "cat")], ["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
       if (info?.kind === "file") items.push(["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
-      if (info?.kind) items.push([info.kind === "url" ? "Copy link" : "Copy path", () => navigator.clipboard.writeText(info.path)]);
-      if (selected) items.push(["Copy", () => navigator.clipboard.writeText(maskCopy(selected))]);
+      if (info?.kind) items.push([info.kind === "url" ? "Copy link" : "Copy path", () => navigator.clipboard.writeText(info.path).then(() => toast("Copied"))]);
+      if (selected) items.push(["Copy", () => navigator.clipboard.writeText(maskCopy(selected)).then(copiedToast)]);
       if (items.length) showContextMenu(e.clientX, e.clientY, items);
     });
   }
@@ -426,6 +427,7 @@ class Pane {
       }
       const text = await invoke("read_block", { session: b.session, start, end });
       await navigator.clipboard.writeText(maskCopy(text.trimEnd()));
+      copiedToast();
       copy.textContent = "Copied";
       setTimeout(() => (copy.textContent = "Copy"), 1200);
     };
@@ -890,7 +892,7 @@ function runAction(id) {
     case "nextTab": cycleTab(1); return true;
     case "copy": {
       const text = activePane?.term.getSelection();
-      if (text && !analyzeOpen) { navigator.clipboard.writeText(maskCopy(text)); return true; }
+      if (text && !analyzeOpen) { navigator.clipboard.writeText(maskCopy(text)).then(copiedToast); return true; }
       return false; // nothing selected: let the key through
     }
     case "analyzeText": showPasteDialog(); return true;
