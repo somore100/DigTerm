@@ -177,6 +177,9 @@ class Pane {
     this.cwd = cwd ?? null;
     this.lines = 0;
     this.blocks = []; // finished commands, in order
+    this.picked = new Set(); // indexes of commands ticked for "analyze several together"
+    this.pickBoxes = [];
+    this.lastPick = null;
     this.runFile = "";
 
     this.el = document.createElement("div");
@@ -350,7 +353,7 @@ class Pane {
       if (info?.kind === "text") items.push(["Open in Digterm viewer", () => openTarget(this, info, "viewer")], ["Show in terminal (cat)", () => openTarget(this, info, "cat")], ["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
       if (info?.kind === "file") items.push(["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
       if (info?.kind) items.push([info.kind === "url" ? "Copy link" : "Copy path", () => navigator.clipboard.writeText(info.path)]);
-      if (selected) items.push(["Copy", () => navigator.clipboard.writeText(selected)]);
+      if (selected) items.push(["Copy", () => navigator.clipboard.writeText(maskCopy(selected))]);
       if (items.length) showContextMenu(e.clientX, e.clientY, items);
     });
   }
@@ -369,6 +372,11 @@ class Pane {
     return wordsOf(line ?? "").find((w) => col >= w.x1 - 1 && col <= w.x2 - 1)?.name ?? null;
   }
 
+  setPicked(i, on) {
+    if (on) this.picked.add(i); else this.picked.delete(i);
+    if (this.pickBoxes[i]) this.pickBoxes[i].checked = on;
+  }
+
   addBlock(b) {
     this.blocks.push(b);
     const num = this.blocks.length;
@@ -385,6 +393,19 @@ class Pane {
         cmdText.title = c;
       })
       .catch(() => {});
+    const idx = this.blocks.length - 1;
+    const pick = document.createElement("input");
+    pick.type = "checkbox";
+    pick.className = "pick";
+    pick.title = "Tick several commands to analyze them together (Shift+click ticks a range)";
+    this.pickBoxes[idx] = pick;
+    pick.onclick = (e) => {
+      const from = e.shiftKey && this.lastPick !== null ? Math.min(idx, this.lastPick) : idx;
+      const to = e.shiftKey && this.lastPick !== null ? Math.max(idx, this.lastPick) : idx;
+      for (let i = from; i <= to; i++) this.setPicked(i, pick.checked);
+      this.lastPick = idx;
+      updateMultiBar();
+    };
     const info = document.createElement("span");
     info.className = "block-info";
     const numEl = document.createElement("span");
@@ -438,7 +459,7 @@ class Pane {
     analyze.onclick = () => (prefs.splitByEntry ? openAnalyze(b) : analyzeFull(this));
     const buttons = document.createElement("span");
     buttons.append(analyze, copy, more);
-    li.append(info, buttons);
+    li.append(pick, info, buttons);
     this.blocksEl.append(li); // order is done in CSS (column-reverse puts the newest on top)
     if (prefs.newestBottom) scrollBlocksToEnd();
   }
@@ -464,6 +485,36 @@ async function analyzeFull(pane) {
   const allRanges = pane.blocks.map((b) => [b.start, b.end]);
   if (end > 0) openAnalyze({ session: pane.id, id: "all", label: "Full output of this terminal", start: 0, end, whole: true, allRanges });
 }
+
+// Several ticked commands of the active terminal in one viewer. The ranges include each typed command, so it
+// shows where one ends and the next begins; "Hide commands" in the viewer leaves them out.
+function analyzeSelected(pane) {
+  const idx = [...pane.picked].sort((a, b) => a - b).filter((i) => pane.blocks[i]);
+  if (!pane || pane.id === null || !idx.length) return;
+  const bs = idx.map((i) => pane.blocks[i]);
+  openAnalyze({
+    session: pane.id,
+    id: "multi",
+    label: `${bs.length} command${bs.length > 1 ? "s" : ""} (${idx.map((i) => i + 1).join(", ")})`,
+    start: bs[0].cmd_start,
+    end: bs[bs.length - 1].end,
+    whole: true,
+    allRanges: bs.map((b) => [b.start, b.end]),
+    cmdRanges: bs.map((b) => [b.cmd_start, b.end]),
+  });
+}
+
+function updateMultiBar() {
+  const n = activePane?.picked.size ?? 0;
+  $("multi-bar").hidden = n === 0;
+  $("analyze-selected").textContent = `Analyze ${n} selected`;
+}
+$("analyze-selected").onclick = () => activePane && analyzeSelected(activePane);
+$("clear-selected").onclick = () => {
+  if (!activePane) return;
+  [...activePane.picked].forEach((i) => activePane.setPicked(i, false));
+  updateMultiBar();
+};
 
 function setSplitByEntry(v) {
   prefs.splitByEntry = v;
@@ -515,6 +566,7 @@ function focusPane(pane) {
   for (const p of panes.values()) p.el.classList.toggle("focused", p === pane);
   for (const t of tabs) for (const p of t.panes) p.blocksEl.hidden = p !== pane;
   scrollBlocksToEnd();
+  updateMultiBar();
   pane.term.focus();
   updateStatus();
   const zl = document.getElementById("zoom-label");
@@ -838,7 +890,7 @@ function runAction(id) {
     case "nextTab": cycleTab(1); return true;
     case "copy": {
       const text = activePane?.term.getSelection();
-      if (text && !analyzeOpen) { navigator.clipboard.writeText(text); return true; }
+      if (text && !analyzeOpen) { navigator.clipboard.writeText(maskCopy(text)); return true; }
       return false; // nothing selected: let the key through
     }
     case "analyzeText": showPasteDialog(); return true;

@@ -217,3 +217,8 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 .ctx-menu button:hover { background: var(--hover); }
 .an-mask-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 6px 10px; background: var(--bg2); border-bottom: 1px solid var(--line); font-size: 12px; }
 .an-mask-panel[hidden] { display: none; }
+#block-lists .block-list .pick { flex: none; margin: 0 2px 0 0; cursor: pointer; }
+#multi-bar { display: flex; gap: 6px; margin: 0 0 8px; }
+#multi-bar[hidden] { display: none; }
+#multi-bar button { font: inherit; font-size: 12px; color: inherit; background: var(--btn); border: 1px solid var(--line2); border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+#multi-bar #analyze-selected { flex: 1; }

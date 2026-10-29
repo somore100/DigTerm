@@ -85,6 +85,45 @@ chord("KeyT", "T", { ctrlKey: true, shiftKey: true });
 await wait(30);
 check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens a tab");
 
+// ticking several commands and analyzing them together
+{
+  const sid = globalThis.__calls.filter(([c]) => c === "pty_spawn").length; // the newest terminal is the active one
+  const block = (id, cmd_start, start, end) => ({ session: sid, id, cmd_start, start, end, lines: 2, exit: 0, ms: 5 });
+  await globalThis.__events["pty-block"]({ payload: block(1, 0, 10, 40) });
+  await globalThis.__events["pty-block"]({ payload: block(2, 50, 60, 90) });
+  await globalThis.__events["pty-block"]({ payload: block(3, 100, 110, 140) });
+  const boxes = [...document.querySelectorAll(".block-list .pick")];
+  check(boxes.length >= 3, "each command has a tick box");
+  const bar = document.getElementById("multi-bar");
+  check(bar.hidden, "selection bar is hidden until something is ticked");
+  const tick = (box, shiftKey) => { box.dispatchEvent(new w.MouseEvent("click", { bubbles: true, shiftKey })); };
+  const last3 = boxes.slice(-3);
+  tick(last3[0], false);
+  tick(last3[2], true); // shift: ticks the range 1..3
+  check(!bar.hidden && /Analyze 3 selected/.test(document.getElementById("analyze-selected").textContent), "shift+click ticks a range");
+  globalThis.__calls.length = 0;
+  document.getElementById("analyze-selected").click();
+  await wait(30);
+  const call = globalThis.__calls.find(([c]) => c === "analyze_open_ranges");
+  check(call && call[1].ranges.length === 3 && call[1].ranges[0][0] === 0 && call[1].ranges[2][1] === 140, "analyze selected opens the three commands with their typed commands");
+  // copying from the viewer with "Mask on copy" ticked must put masked text on the clipboard
+  let copied = null;
+  Object.defineProperty(w.navigator, "clipboard", { value: { writeText: async (t) => { copied = t; } }, configurable: true });
+  globalThis.__lines = ["ssh bob@example.com from 10.1.2.3, password=hunter2, home /home/alice/x"];
+  const viewer = document.getElementById("analyze");
+  check(viewer, "the viewer is open");
+  if (viewer) {
+    viewer.querySelector(".an-mask-on").dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+    viewer.querySelector(".an-copy-all").click();
+    await wait(30);
+    check(copied?.startsWith("ssh <email-1> from <ip-1>, password=<secret>, home /home/<user>/x\n"), `viewer copy is masked: got ${JSON.stringify(copied)}`);
+  }
+  globalThis.__lines = null;
+  document.querySelector("#analyze .an-close")?.click();
+  document.getElementById("clear-selected").click();
+  check(bar.hidden, "clear hides the selection bar");
+}
+
 // masking of sensitive details (pure text functions)
 {
   const { maskText } = await import(pathToFileURL(path.join(root, "src/mask.js")).href);

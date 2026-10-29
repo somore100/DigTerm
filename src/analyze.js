@@ -50,6 +50,7 @@ export async function openAnalyze(block) {
   const hideCmd = !!block.whole && !!block.allRanges?.length && loadSettings().hideCmd;
   try {
     if (hideCmd) total = await invoke("analyze_open_ranges", { session: block.session, ranges: block.allRanges });
+    else if (block.cmdRanges) total = await invoke("analyze_open_ranges", { session: block.session, ranges: block.cmdRanges });
     else if (block.importText !== undefined) total = await invoke("analyze_open_text", { text: block.importText });
     else if (block.run) total = await invoke("analyze_open_run", { name: block.run, start: block.start, end: block.end });
     else if (block.importPath) total = await invoke("analyze_open_file", { path: block.importPath });
