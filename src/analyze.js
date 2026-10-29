@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { maskCopy, loadMask, saveMask, MASK_KINDS } from "./mask.js";
 import { copiedToast } from "./toast.js";
 import { showContextMenu } from "./ctxmenu.js";
+import { compactLine, pickAliases } from "./compact.js";
 
 let ROW = 18;
 
@@ -89,6 +90,7 @@ export async function openAnalyze(block) {
       <label class="an-toggle" title="Show long lines as indented sub-lines instead of scrolling sideways"><input type="checkbox" class="an-wrap" /> Wrap long lines</label>
       <button class="an-hl-edit" title="Edit highlight words">Words…</button>
       <button class="an-patterns-btn" title="Group all lines by pattern">Patterns</button>
+      <button class="an-compact-btn" title="Shorter display text: fewer spaces, shortened long words and folders (view only)">Compact…</button>
       <label class="an-toggle" title="Replace IP addresses, emails, user names and secrets with labels when copying (the output itself is not changed)"><input type="checkbox" class="an-mask-on" /> Mask on copy</label>
       <button class="an-mask-edit" title="Choose what is masked">Mask…</button>
       <button class="an-copy-sel">Copy selection</button>
@@ -100,6 +102,15 @@ export async function openAnalyze(block) {
       <label>Warnings <input class="hl-warn" /></label>
       <label>Your words <input class="hl-note" placeholder="e.g. timeout, retry" /></label>
       <span class="an-hint">comma-separated, whole words, not case sensitive · Ctrl +/− zooms</span>
+    </div>
+    <div class="an-compact-panel" hidden>
+      <label class="an-toggle"><input type="checkbox" class="cp-spaces" /> Squeeze spaces</label>
+      <label class="an-toggle"><input type="checkbox" class="cp-tokens" /> Shorten long words (hashes, ids)</label>
+      <label class="an-toggle"><input type="checkbox" class="cp-paths" /> Shorten repeated folders</label>
+      <button class="cp-best" title="Tries every folding mode and all compact options and applies what saves the most">Best compression</button>
+      <button class="cp-off">Off</button>
+      <span class="an-hint">view only · while on, copying gives the compact text and long lines do not wrap</span>
+      <div class="cp-info"></div>
     </div>
     <div class="an-mask-panel" hidden></div>
     <div class="an-main"><div class="an-body"><div class="an-spacer"></div><div class="an-rows"></div></div><aside class="an-patterns" hidden></aside></div>`;
@@ -180,8 +191,14 @@ export async function openAnalyze(block) {
   let moving = Promise.resolve();
 
   // --- long lines are shown as sub-lines; rows then differ in height, tracked as "extras"
+  const cp = { spaces: false, tokens: false, paths: false }; // compact view options
+  let aliases = []; // folder tags, picked from the first lines when "Shorten repeated folders" is first used
+  let sampleLines = null;
+  const compactOn = () => cp.spaces || cp.tokens || cp.paths;
+  const cz = (t) => (compactOn() ? compactLine(t, cp, aliases) : t);
   let lens = null; // UTF-16 length of every original line, loaded after the viewer opens
   let wrapOn = settings.wrap;
+  const wrapEff = () => wrapOn && !compactOn(); // compact text no longer matches the line lengths wrapping is planned with
   let wrapW = Infinity; // characters per sub-line
   let ex = []; // [{v, n}] view rows that take n extra visual rows, sorted by v
   let exCum = []; // cumulative extra rows including each entry
@@ -212,17 +229,18 @@ export async function openAnalyze(block) {
     countEl.textContent = collapsed
       ? `${total.toLocaleString()} lines · ${viewTotal.toLocaleString()} after collapsing`
       : `${total.toLocaleString()} lines`;
-    copyAllEl.textContent = collapsed ? "Copy all (collapsed)" : "Copy all";
+    const how = [collapsed && "collapsed", compactOn() && "compact"].filter(Boolean).join(", ");
+    copyAllEl.textContent = how ? `Copy all (${how})` : "Copy all";
   }
 
   function computeWrapW() {
-    wrapW = wrapOn ? Math.max(30, Math.floor((body.clientWidth - 150) / charW)) : Infinity;
+    wrapW = wrapEff() ? Math.max(30, Math.floor((body.clientWidth - 150) / charW)) : Infinity;
   }
 
   function rebuildExtras() {
     ex = [];
     exCum = [];
-    if (wrapOn && lens && Number.isFinite(wrapW)) {
+    if (wrapEff() && lens && Number.isFinite(wrapW)) {
       const list = [];
       for (let L = 0; L < total; L++) {
         if (lens[L] <= wrapW) continue;
@@ -303,7 +321,7 @@ export async function openAnalyze(block) {
 
   async function fetchLines(from, to) {
     const lines = await invoke("analyze_lines", { from, count: to - from });
-    lines.forEach((t, i) => cache.set(from + i, t));
+    lines.forEach((t, i) => cache.set(from + i, cz(t)));
   }
 
   async function render() {
@@ -335,7 +353,7 @@ export async function openAnalyze(block) {
       if (matches.length && hasMatchIn(r.line, end)) cls += cur >= r.line && cur <= end ? " cur" : " hit";
       if (sel && r.line <= sel[1] && end >= sel[0]) cls += " sel";
       const badge = r.count > 1 ? `<span class="rep" title="Click to expand">×${r.count.toLocaleString()}</span>` : "";
-      const nSub = wrapOn && lens && Number.isFinite(wrapW) && t.length > wrapW ? Math.ceil(t.length / wrapW) : 1;
+      const nSub = wrapEff() && lens && Number.isFinite(wrapW) && t.length > wrapW ? Math.ceil(t.length / wrapW) : 1;
       let inner = "";
       for (let j = 0; j < nSub; j++) {
         const start = nSub > 1 ? j * wrapW : 0;
@@ -487,7 +505,7 @@ export async function openAnalyze(block) {
   async function textFor(from, to) {
     const parts = [];
     for (let i = from; i < to; i += 20000) {
-      parts.push(...(await invoke("analyze_lines", { from: i, count: Math.min(20000, to - i) })));
+      parts.push(...(await invoke("analyze_lines", { from: i, count: Math.min(20000, to - i) })).map(cz));
     }
     return parts.join("\n");
   }
@@ -497,7 +515,7 @@ export async function openAnalyze(block) {
     let cursor = 0;
     for (const g of eff) {
       if (g.first > cursor) parts.push(await textFor(cursor, g.first));
-      const line = g.summary ?? (await invoke("analyze_lines", { from: g.first, count: 1 }))[0];
+      const line = g.summary ?? cz((await invoke("analyze_lines", { from: g.first, count: 1 }))[0]);
       parts.push(`${line}  ×${g.count}`);
       cursor = g.first + g.count;
     }
@@ -684,6 +702,79 @@ export async function openAnalyze(block) {
     if (tsel) copyText(e.target, tselText);
     else if (sel) copyText(e.target, () => textFor(sel[0], sel[1] + 1));
   };
+  // --- compact view
+  const cpPanel = root.querySelector(".an-compact-panel");
+  const cpInfo = root.querySelector(".cp-info");
+  const cpBoxes = { spaces: root.querySelector(".cp-spaces"), tokens: root.querySelector(".cp-tokens"), paths: root.querySelector(".cp-paths") };
+  let bestNote = "";
+  async function loadAliases() {
+    if (sampleLines) return;
+    sampleLines = await invoke("analyze_lines", { from: 0, count: Math.min(total, 20000) });
+    aliases = pickAliases(sampleLines);
+  }
+  async function applyCompact() {
+    if (cp.paths) await loadAliases();
+    cache.clear();
+    tsel = null;
+    tpos = null;
+    wrapEl.disabled = compactOn();
+    wrapEl.title = compactOn() ? "Wrapping is off while the compact view is on" : "Show long lines as indented sub-lines instead of scrolling sideways";
+    const legend = cp.paths && aliases.length ? aliases.map((a) => `${a.tag} = ${a.prefix}`).join("   ") : "";
+    cpInfo.textContent = [bestNote, legend].filter(Boolean).join("\n");
+    relayoutWrap();
+  }
+  for (const k of Object.keys(cpBoxes)) {
+    cpBoxes[k].onchange = () => { cp[k] = cpBoxes[k].checked; bestNote = ""; applyCompact(); };
+  }
+  root.querySelector(".an-compact-btn").onclick = () => { cpPanel.hidden = !cpPanel.hidden; };
+  root.querySelector(".cp-off").onclick = () => {
+    for (const k of Object.keys(cp)) { cp[k] = false; cpBoxes[k].checked = false; }
+    bestNote = "";
+    applyCompact();
+  };
+  // Estimates the size of every folding mode from the line lengths, plus the saving of all compact
+  // options measured on the first lines, and applies the smallest combination.
+  async function bestCompression() {
+    const btn = root.querySelector(".cp-best");
+    btn.disabled = true;
+    cpInfo.textContent = "Measuring…";
+    try {
+      if (!lens) lens = new Uint32Array(await invoke("analyze_lengths"));
+      let all = 0;
+      for (let i = 0; i < total; i++) all += lens[i] + 1;
+      await loadAliases();
+      const all3 = { spaces: true, tokens: true, paths: true };
+      let before = 0, after = 0;
+      for (const l of sampleLines) { before += l.length + 1; after += compactLine(l, all3, aliases).length + 1; }
+      const ratio = before ? after / before : 1;
+      let bestMode = "off", bestSize = all;
+      for (const mode of ["exact", "numbers", "fields", "blocks", "blocks-numbers"]) {
+        groupsByMode[mode] ??= await invoke("analyze_groups", { mode });
+        let size = all;
+        for (const g of groupsByMode[mode]) {
+          let removed = 0;
+          for (let L = g.first; L < g.first + g.count; L++) removed += lens[L] + 1;
+          size -= removed - ((g.summary?.length ?? lens[g.first]) + 1);
+        }
+        if (size < bestSize * 0.97) { bestMode = mode; bestSize = size; } // a lossier mode must be clearly better
+      }
+      if (bestSize > all * 0.95) bestMode = "off";
+      const useCompact = ratio < 0.98;
+      const est = Math.round((bestMode === "off" ? all : bestSize) * (useCompact ? ratio : 1));
+      for (const k of Object.keys(cp)) { cp[k] = useCompact; cpBoxes[k].checked = useCompact; }
+      modeEl.value = bestMode;
+      modeEl.dispatchEvent(new Event("change"));
+      const name = modeEl.selectedOptions[0].textContent;
+      bestNote = `Best: ${[bestMode !== "off" && name, useCompact && "compact view"].filter(Boolean).join(" + ") || "nothing saves enough here"} · about ${all.toLocaleString()} → ${est.toLocaleString()} characters (−${Math.round((1 - est / all) * 100)}%)`;
+      await applyCompact();
+    } catch (e) {
+      cpInfo.textContent = `Could not measure: ${e}`;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  root.querySelector(".cp-best").onclick = bestCompression;
+
   root.addEventListener("contextmenu", (e) => {
     if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return; // keep the native menu for typing fields
     e.preventDefault();

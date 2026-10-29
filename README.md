@@ -66,7 +66,13 @@ open any command's output in a viewer built for very large outputs.
   - exact repeats: `line text ×4,213`
   - repeats with number patterns: `item ⟨1…5000, +1⟩ ×5,000`
   - repeats with word/field patterns: `user ⟨alice ×50, bob ×50⟩ failed to log in ×100`
+  - repeated multi-line blocks (the same stack trace or record over and over), exact or ignoring numbers:
+    `⟲ 3-line block × 40: first line …`
   - always shows both counts, for example `15,009 lines · 12 after collapsing`
+- **Compact view** (the **Compact…** button, off by default): squeeze runs of spaces, shorten very long words such as
+  hashes and ids, and replace folders that start many paths with a short tag (`⟨1⟩ = /home/me/project`, shown in the
+  panel). **Best compression** measures every folding mode and all compact options and applies what saves the most.
+  View only; while it is on, copying gives the compact text and long lines are not wrapped.
 - **Errors:** jump to the next or previous error line with the ▲ ▼ buttons or F8 / Shift+F8, or show only error lines, or
   only warning and error lines (everything else collapses into `⋯ N lines hidden` rows). Uses the same word lists as the
   highlighting.
@@ -152,15 +158,14 @@ Roughly in the order I plan to do them. Nothing here is promised, and the order 
 **Done in 0.2**
 - Command text, duration and numbering in the Commands list; history of earlier sessions and cleanup of old saved
   output; jumping between errors and a severity filter; Ctrl+click and right-click on folders, files and links;
-  whole-run analysis and copy; Rust unit tests.
+  whole-run analysis and copy; masking on copy; `digterm file` / `cmd | digterm -`; multi-line block folding; compact
+  view with best compression; Rust unit tests.
 
 **Next**
 - Export or copy a viewer selection with sensitive details (usernames, IP addresses, paths) masked.
 - Step through a pattern's lines with ▲ ▼ buttons, and group by words and ids as well as numbers.
 
 **Then**
-- Folding of repeating multi-line blocks.
-- Compact view: squeeze runs of spaces, shorten very long words (ids, hashes) and repeated path prefixes, all view-only.
 - Ctrl+click on `file:line` in the output to open it at that line.
 - Follow a running command's output live in the viewer.
 - Diagnostic command presets (read-only, documented, human-editable), with a clear explanation before anything needs elevated privileges.

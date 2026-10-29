@@ -119,6 +119,24 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
     check(copied?.startsWith("ssh <email-1> from <ip-1>, password=<secret>, home /home/<user>/x\n"), `viewer copy is masked: got ${JSON.stringify(copied)}`);
   }
   check(document.querySelector(".toast.show")?.textContent === "Copied (masked)", "a note appears after copying");
+  if (viewer) {
+    // compact view: squeezing spaces changes what is shown and copied, and turning it off restores it
+    viewer.querySelector(".cp-off").click();
+    await wait(30);
+    globalThis.__lines = ["a      b    c"];
+    const box = viewer.querySelector(".cp-spaces");
+    box.checked = true;
+    box.dispatchEvent(new w.Event("change"));
+    await wait(30);
+    check(/compact/.test(viewer.querySelector(".an-copy-all").textContent), "copy button says compact while compact view is on");
+    check(viewer.querySelector(".an-rows").textContent.includes("a b c"), "compact view squeezes spaces in the rows");
+    viewer.querySelector(".an-copy-all").click();
+    await wait(30);
+    check(copied?.startsWith("a b c\n"), `compact copy gives the compact text: got ${JSON.stringify(copied)}`);
+    viewer.querySelector(".cp-off").click();
+    await wait(30);
+    check(viewer.querySelector(".an-rows").textContent.includes("a      b    c"), "turning compact off restores the text");
+  }
   globalThis.__lines = null;
   document.querySelector("#analyze .an-close")?.click();
   document.getElementById("clear-selected").click();
