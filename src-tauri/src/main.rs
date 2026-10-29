@@ -1,7 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    collections::HashMap,
+    collections::{hash_map::DefaultHasher, HashMap},
+    hash::{Hash, Hasher},
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -1018,6 +1019,71 @@ fn group_fields(a: &Analysis) -> Result<Vec<Group>, String> {
     Ok(groups)
 }
 
+/// Longest block of lines that block folding looks for.
+const MAX_BLOCK: usize = 12;
+
+/// Finds runs where a block of 2..=MAX_BLOCK lines repeats back to back at least twice, given one
+/// hash per line. Returns (first line, block length, repeats). Runs of identical neighbouring
+/// lines (block length 1) are left to the other folding modes.
+fn block_repeats(h: &[u64]) -> Vec<(usize, usize, usize)> {
+    let n = h.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let mut best: Option<(usize, usize)> = None;
+        for p in 2..=MAX_BLOCK {
+            if i + 2 * p > n {
+                break;
+            }
+            if (1..p).all(|j| h[i + j] == h[i]) {
+                continue;
+            }
+            let mut r = 1;
+            while i + (r + 1) * p <= n && (0..p).all(|j| h[i + r * p + j] == h[i + j]) {
+                r += 1;
+            }
+            if r >= 2 && best.map_or(true, |(bp, br)| r * p > br * bp) {
+                best = Some((p, r));
+            }
+        }
+        if let Some((p, r)) = best {
+            out.push((i, p, r));
+            i += p * r;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Folds repeated multi-line blocks (e.g. the same stack trace or record over and over).
+/// With `numbers`, lines that differ only in standalone numbers count as equal.
+fn group_blocks(a: &Analysis, numbers: bool) -> Result<Vec<Group>, String> {
+    let total = a.starts.len();
+    let mut h: Vec<u64> = Vec::with_capacity(total);
+    let mut from = 0;
+    while from < total {
+        let to = (from + 20_000).min(total);
+        for line in a.read(from, to)? {
+            let mut s = DefaultHasher::new();
+            if numbers {
+                pattern_of(&line).hash(&mut s);
+            } else {
+                line.hash(&mut s);
+            }
+            h.push(s.finish());
+        }
+        from = to;
+    }
+    let mut groups = Vec::new();
+    for (first, p, r) in block_repeats(&h) {
+        let head = a.read(first, first + 1)?.into_iter().next().unwrap_or_default();
+        let head: String = head.chars().take(80).collect();
+        groups.push(Group { first: first as u64, count: (p * r) as u64, summary: Some(format!("⟲ {p}-line block × {r}: {head} …")) });
+    }
+    Ok(groups)
+}
+
 #[derive(Serialize)]
 struct Pattern {
     template: String,
@@ -1087,6 +1153,9 @@ async fn analyze_groups(state: State<'_, AppState>, mode: String) -> Result<Vec<
     let a = current_analysis(&state)?;
     if mode == "fields" {
         return group_fields(&a);
+    }
+    if mode == "blocks" || mode == "blocks-numbers" {
+        return group_blocks(&a, mode == "blocks-numbers");
     }
     let numbers = mode == "numbers";
     let total = a.starts.len();
@@ -1530,6 +1599,34 @@ mod tests {
         assert!(groups_of("a b\nc d\ne f\n").is_empty());
         assert!(groups_of("one two three\nonly two\n").is_empty());
         assert!(groups_of("").is_empty());
+    }
+
+    #[test]
+    fn block_repeats_finds_back_to_back_blocks() {
+        // x [A B A B] y  -> block of 2, twice, starting at line 1
+        assert_eq!(block_repeats(&[9, 1, 2, 1, 2, 8]), vec![(1, 2, 2)]);
+        // A B C D A B C D -> one block of 4 rather than two blocks of 2
+        assert_eq!(block_repeats(&[1, 2, 3, 4, 1, 2, 3, 4]), vec![(0, 4, 2)]);
+        // A B A B A B -> 3 repeats of 2
+        assert_eq!(block_repeats(&[1, 2, 1, 2, 1, 2]), vec![(0, 2, 3)]);
+    }
+
+    #[test]
+    fn block_repeats_ignores_single_line_repeats_and_unique_lines() {
+        assert!(block_repeats(&[1, 1, 1, 1]).is_empty());
+        assert!(block_repeats(&[1, 2, 3, 4, 5]).is_empty());
+        assert!(block_repeats(&[]).is_empty());
+    }
+
+    #[test]
+    fn group_blocks_folds_repeated_blocks_and_can_ignore_numbers() {
+        let text = "start\nGET /a 200\ndone 1\nGET /a 200\ndone 2\nend\n";
+        let exact = with_analysis(text, |a| group_blocks(a, false).unwrap().len());
+        assert_eq!(exact, 0);
+        let g = with_analysis(text, |a| group_blocks(a, true).unwrap());
+        assert_eq!(g.len(), 1);
+        assert_eq!((g[0].first, g[0].count), (1, 4));
+        assert!(g[0].summary.as_deref().unwrap().starts_with("⟲ 2-line block × 2: GET /a 200"));
     }
 
     #[test]

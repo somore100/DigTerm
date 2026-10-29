@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { maskCopy, loadMask, saveMask, MASK_KINDS } from "./mask.js";
 import { copiedToast } from "./toast.js";
+import { showContextMenu } from "./ctxmenu.js";
 
 let ROW = 18;
 
@@ -75,6 +76,8 @@ export async function openAnalyze(block) {
         <option value="exact">Fold exact repeats</option>
         <option value="numbers">Fold repeats + number patterns</option>
         <option value="fields">Fold repeats + word/field patterns</option>
+        <option value="blocks">Fold repeated multi-line blocks</option>
+        <option value="blocks-numbers">Fold repeated blocks (ignore numbers)</option>
         <option value="sev-err">Show only error lines</option>
         <option value="sev-warn">Show only warning + error lines</option>
       </select>
@@ -681,6 +684,16 @@ export async function openAnalyze(block) {
     if (tsel) copyText(e.target, tselText);
     else if (sel) copyText(e.target, () => textFor(sel[0], sel[1] + 1));
   };
+  root.addEventListener("contextmenu", (e) => {
+    if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return; // keep the native menu for typing fields
+    e.preventDefault();
+    const btn = root.querySelector(".an-copy-sel");
+    const items = [];
+    if (tsel) items.push(["Copy selection", () => copyText(btn, tselText)]);
+    else if (sel) items.push(["Copy selection", () => copyText(btn, () => textFor(sel[0], sel[1] + 1))]);
+    items.push([collapsed ? "Copy all (collapsed)" : "Copy all", () => copyText(copyAllEl, () => (collapsed ? collapsedText() : textFor(0, total)))]);
+    showContextMenu(e.clientX, e.clientY, items);
+  });
   copyAllEl.onclick = (e) => copyText(e.target, () => (collapsed ? collapsedText() : textFor(0, total)));
 
   function refreshHighlight() {

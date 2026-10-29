@@ -10,6 +10,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
 import { toast, copiedToast } from "./toast.js";
+import { showContextMenu } from "./ctxmenu.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -142,31 +143,6 @@ function openTarget(pane, info, action) {
   const cmd = action === "cd" ? `cd -- ${shellQuote(info.path)}` : `${IS_WIN ? "type" : "cat --"} ${shellQuote(info.path)}`;
   invoke("pty_write", { id: pane.id, data: `\x15${IS_WIN ? cmd.replace("cd -- ", "cd ") : cmd}\r` }); // Ctrl+U clears what was typed
   pane.term.focus();
-}
-
-function showContextMenu(x, y, items) {
-  document.querySelectorAll(".ctx-menu").forEach((n) => n.remove());
-  const menu = document.createElement("div");
-  menu.className = "ctx-menu";
-  for (const [label, fn] of items) {
-    const b = document.createElement("button");
-    b.textContent = label;
-    b.onclick = () => { menu.remove(); fn(); };
-    menu.append(b);
-  }
-  document.body.append(menu);
-  const r = menu.getBoundingClientRect();
-  menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - r.width - 4))}px`;
-  menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`;
-  const off = (e) => {
-    if (e.type === "keydown" && e.key !== "Escape") return;
-    if (e.type === "mousedown" && menu.contains(e.target)) return; // let the click reach the button
-    // capturing on window also sees every element's blur (the terminal loses focus when you press the menu)
-    if (e.type === "blur" && e.target !== window) return;
-    menu.remove();
-    for (const t of ["mousedown", "keydown", "blur"]) window.removeEventListener(t, off, true);
-  };
-  setTimeout(() => { for (const t of ["mousedown", "keydown", "blur"]) window.addEventListener(t, off, true); }, 0);
 }
 
 class Pane {
@@ -342,7 +318,6 @@ class Pane {
     this.termEl.addEventListener("contextmenu", async (e) => {
       const name = this.targetAt(e);
       const selected = this.term.getSelection();
-      if (!name && !selected) return;
       e.preventDefault();
       const items = [];
       let info = null;
@@ -355,7 +330,8 @@ class Pane {
       if (info?.kind === "file") items.push(["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
       if (info?.kind) items.push([info.kind === "url" ? "Copy link" : "Copy path", () => navigator.clipboard.writeText(info.path).then(() => toast("Copied"))]);
       if (selected) items.push(["Copy", () => navigator.clipboard.writeText(maskCopy(selected)).then(copiedToast)]);
-      if (items.length) showContextMenu(e.clientX, e.clientY, items);
+      items.push(["Paste", () => navigator.clipboard.readText().then((t) => t && this.term.paste(t)).catch(() => {})]);
+      showContextMenu(e.clientX, e.clientY, items);
     });
   }
 
