@@ -4,3 +4,7 @@ node_modules/
 target/
 dist/
 src-tauri/gen/
+.venv/
+venv/
+CLAUDE.md
+claude.md
