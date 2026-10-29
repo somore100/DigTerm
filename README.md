@@ -53,6 +53,11 @@ open any command's output in a viewer built for very large outputs.
   the viewer, show in the terminal (`cat`), open with the default app, show in file manager, open in browser, copy path.
 - Can be switched off in Preferences. Names are looked up in the terminal's current folder.
 
+**From the command line**
+- `digterm file.log` opens a text file in the viewer.
+- `some-command 2>&1 | digterm -` sends any command's output into the viewer. The window opens when the command has
+  finished. Up to 1 GiB is kept.
+
 **Output viewer**
 - Opens outputs of millions of lines instantly: only the visible lines are ever loaded.
 - Search, go to line, keyboard caret (arrows, Shift+arrows, Home/End) and exact text selection and copy.
@@ -157,7 +162,6 @@ Roughly in the order I plan to do them. Nothing here is promised, and the order 
 - Folding of repeating multi-line blocks.
 - Compact view: squeeze runs of spaces, shorten very long words (ids, hashes) and repeated path prefixes, all view-only.
 - Ctrl+click on `file:line` in the output to open it at that line.
-- `command | digterm` to send output from any other terminal straight into the viewer.
 - Follow a running command's output live in the viewer.
 - Diagnostic command presets (read-only, documented, human-editable), with a clear explanation before anything needs elevated privileges.
 - Comparing two runs of the same command, ignoring timestamps and process ids.

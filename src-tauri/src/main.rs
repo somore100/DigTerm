@@ -5,7 +5,7 @@ use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex},
+    sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -14,7 +14,8 @@ use serde::Serialize;
 use tauri::{ipc::{Channel, InvokeResponseBody}, AppHandle, Emitter, Manager, State};
 
 struct Session {
-    writer: Box<dyn Write + Send>,
+    /// Keystrokes and pastes go to a writer thread, so a shell that is slow to read never blocks the window.
+    input: std::sync::mpsc::Sender<Vec<u8>>,
     master: Box<dyn MasterPty + Send>,
     run_path: PathBuf,
     pid: Option<u32>,
@@ -259,7 +260,18 @@ fn pty_spawn(
     let killer = child.clone_killer();
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let (input, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        // Writing blocks while the shell is busy and the terminal's input buffer is full (a big paste).
+        // Doing it here, off the UI thread and without holding the sessions lock, keeps the app responsive.
+        for data in input_rx {
+            if writer.write_all(&data).is_err() {
+                break;
+            }
+            let _ = writer.flush();
+        }
+    });
 
     let runs_dir = data_dir.join("runs");
     fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
@@ -269,7 +281,7 @@ fn pty_spawn(
 
     state.sessions.lock().unwrap().insert(
         id,
-        Session { writer, master: pair.master, run_path: path.clone(), pid, killer },
+        Session { input, master: pair.master, run_path: path.clone(), pid, killer },
     );
 
     std::thread::spawn(move || {
@@ -311,9 +323,9 @@ fn pty_spawn(
 
 #[tauri::command]
 fn pty_write(state: State<'_, AppState>, id: u32, data: String) -> Result<(), String> {
-    let mut guard = state.sessions.lock().unwrap();
-    let session = guard.get_mut(&id).ok_or("no session")?;
-    session.writer.write_all(data.as_bytes()).map_err(|e| e.to_string())
+    let guard = state.sessions.lock().unwrap();
+    let session = guard.get(&id).ok_or("no session")?;
+    session.input.send(data.into_bytes()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1229,7 +1241,65 @@ fn strip_ansi(bytes: &[u8]) -> String {
         .join("\n")
 }
 
+/// What the command line asks for: `digterm file.log`, or `some-command | digterm -` for piped input.
+#[derive(Debug, PartialEq)]
+enum Startup {
+    Nothing,
+    File(String),
+    Stdin,
+}
+
+fn parse_startup(args: &[String]) -> Startup {
+    // flags (the windowing system may add some) are ignored; `-` alone means "read standard input"
+    match args.iter().find(|a| a.as_str() == "-" || !a.starts_with('-')) {
+        Some(a) if a == "-" => Startup::Stdin,
+        Some(a) => Startup::File(a.clone()),
+        None => Startup::Nothing,
+    }
+}
+
+/// File the viewer should open when the app starts (a file argument, or piped input saved to a temp file).
+static STARTUP: OnceLock<PathBuf> = OnceLock::new();
+
+/// Handles the command line before the window opens. Piped input is read to its end first, so the
+/// window appears when the producing command has finished.
+fn resolve_startup() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let path = match parse_startup(&args) {
+        Startup::Nothing => return,
+        Startup::File(f) => {
+            let p = PathBuf::from(&f);
+            if !p.is_file() {
+                eprintln!("digterm: {f} is not a file");
+                return;
+            }
+            fs::canonicalize(&p).unwrap_or(p)
+        }
+        Startup::Stdin => {
+            let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let p = std::env::temp_dir().join(format!("digterm-pipe-{ts}-{}.txt", std::process::id()));
+            let Ok(mut f) = File::create(&p) else { return };
+            // the viewer can open up to 1 GiB, so that is all that is kept
+            let n = std::io::copy(&mut std::io::stdin().lock().take(1 << 30), &mut f).unwrap_or(0);
+            if n == 0 {
+                let _ = fs::remove_file(&p);
+                eprintln!("digterm: nothing was piped in");
+                return;
+            }
+            p
+        }
+    };
+    let _ = STARTUP.set(path);
+}
+
+/// The file given on the command line (or the piped input), for the viewer to open at start.
+#[tauri::command]
+fn startup_open() -> Option<String> {
+    STARTUP.get().map(|p| p.to_string_lossy().into_owned())
+}
+
 fn main() {
+    resolve_startup();
     // WebKitGTK can leave ghost copies of the page while the window is dragged or resized under
     // native Wayland (seen on Fedora). Running through XWayland and disabling its GPU compositing
     // avoids that. Any value you set yourself (for example GDK_BACKEND=wayland) is respected.
@@ -1246,7 +1316,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
@@ -1502,6 +1572,17 @@ mod tests {
         assert_eq!(kinds, vec!["dir", "text", "file", ""]);
         assert!(path_info(None, vec!["relative".into()])[0].kind.is_empty());
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn parse_startup_reads_the_command_line() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_startup(&a(&[])), Startup::Nothing);
+        assert_eq!(parse_startup(&a(&["-"])), Startup::Stdin);
+        assert_eq!(parse_startup(&a(&["build.log"])), Startup::File("build.log".into()));
+        assert_eq!(parse_startup(&a(&["--gtk-flag", "x.log"])), Startup::File("x.log".into()));
+        assert_eq!(parse_startup(&a(&["--gtk-flag"])), Startup::Nothing);
+        assert_eq!(parse_startup(&a(&["-psn_0_1234"])), Startup::Nothing);
     }
 
     #[test]

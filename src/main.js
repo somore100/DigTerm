@@ -1364,3 +1364,8 @@ if (prefs.restoreDirs && layout?.tabs?.length) {
 } else {
   await newTab(null);
 }
+
+// `digterm file.log` and `some-command | digterm -` start the app with that text open in the viewer
+invoke("startup_open")
+  .then((p) => { if (p) openAnalyze({ label: /digterm-pipe-/.test(p) ? "Piped input" : `File: ${basename(p)}`, importPath: p }); })
+  .catch(() => {});
