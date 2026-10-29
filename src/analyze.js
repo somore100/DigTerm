@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { maskCopy, loadMask, saveMask, MASK_KINDS } from "./mask.js";
 
 let ROW = 18;
 
@@ -83,6 +84,8 @@ export async function openAnalyze(block) {
       <label class="an-toggle" title="Show long lines as indented sub-lines instead of scrolling sideways"><input type="checkbox" class="an-wrap" /> Wrap long lines</label>
       <button class="an-hl-edit" title="Edit highlight words">Words…</button>
       <button class="an-patterns-btn" title="Group all lines by pattern">Patterns</button>
+      <label class="an-toggle" title="Replace IP addresses, emails, user names and secrets with labels when copying (the output itself is not changed)"><input type="checkbox" class="an-mask-on" /> Mask on copy</label>
+      <button class="an-mask-edit" title="Choose what is masked">Mask…</button>
       <button class="an-copy-sel">Copy selection</button>
       <button class="an-copy-all">Copy all</button>
       <button class="an-close">Close</button>
@@ -93,6 +96,7 @@ export async function openAnalyze(block) {
       <label>Your words <input class="hl-note" placeholder="e.g. timeout, retry" /></label>
       <span class="an-hint">comma-separated, whole words, not case sensitive · Ctrl +/− zooms</span>
     </div>
+    <div class="an-mask-panel" hidden></div>
     <div class="an-main"><div class="an-body"><div class="an-spacer"></div><div class="an-rows"></div></div><aside class="an-patterns" hidden></aside></div>`;
   document.body.append(root);
 
@@ -123,6 +127,27 @@ export async function openAnalyze(block) {
   const copyAllEl = root.querySelector(".an-copy-all");
   const wrapEl = root.querySelector(".an-wrap");
   wrapEl.checked = settings.wrap;
+  const maskOn = root.querySelector(".an-mask-on");
+  const maskPanel = root.querySelector(".an-mask-panel");
+  {
+    const m = loadMask();
+    maskOn.checked = m.on;
+    maskOn.onchange = () => saveMask({ ...loadMask(), on: maskOn.checked });
+    for (const [k, text] of MASK_KINDS) {
+      const l = document.createElement("label");
+      const c = document.createElement("input");
+      c.type = "checkbox";
+      c.checked = m[k];
+      c.onchange = () => saveMask({ ...loadMask(), [k]: c.checked });
+      l.append(c, ` ${text}`);
+      maskPanel.append(l);
+    }
+    const hint = document.createElement("span");
+    hint.className = "an-hint";
+    hint.textContent = "applies to every Copy button · same value gets the same label · may hide a little too much";
+    maskPanel.append(hint);
+    root.querySelector(".an-mask-edit").onclick = () => { maskPanel.hidden = !maskPanel.hidden; };
+  }
   const hideEl = root.querySelector(".an-hide-cmd");
   if (block.whole && block.allRanges?.length) {
     hideEl.parentElement.hidden = false;
@@ -476,9 +501,9 @@ export async function openAnalyze(block) {
   }
 
   async function copyText(button, getText) {
-    await navigator.clipboard.writeText(await getText());
+    await navigator.clipboard.writeText(maskCopy(await getText()));
     const old = button.textContent;
-    button.textContent = "Copied";
+    button.textContent = loadMask().on ? "Copied (masked)" : "Copied";
     setTimeout(() => (button.textContent = old), 1200);
   }
 
@@ -739,7 +764,7 @@ export async function openAnalyze(block) {
       lines.push([...row.querySelectorAll(".tx")].filter((t) => range.intersectsNode(t)).map(part).join(""));
     }
     if (!lines.length) return;
-    e.clipboardData.setData("text/plain", lines.join("\n"));
+    e.clipboardData.setData("text/plain", maskCopy(lines.join("\n")));
     e.preventDefault();
   });
 

@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze } from "./analyze.js";
+import { maskCopy, loadMask, saveMask } from "./mask.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -403,7 +404,7 @@ class Pane {
         end = await invoke("session_len", { id: b.session });
       }
       const text = await invoke("read_block", { session: b.session, start, end });
-      await navigator.clipboard.writeText(text.trimEnd());
+      await navigator.clipboard.writeText(maskCopy(text.trimEnd()));
       copy.textContent = "Copied";
       setTimeout(() => (copy.textContent = "Copy"), 1200);
     };
@@ -956,6 +957,10 @@ function showPreferences() {
     };
 
     const fmtBytes = (n) => (n < 1048576 ? `${Math.round(n / 1024)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
+    const mask = document.createElement("input");
+    mask.type = "checkbox"; mask.checked = loadMask().on;
+    mask.onchange = () => saveMask({ ...loadMask(), on: mask.checked });
+
     const links = document.createElement("input");
     links.type = "checkbox"; links.checked = prefs.folderLinks;
     links.onchange = () => { prefs.folderLinks = links.checked; savePrefs(); };
@@ -1001,6 +1006,7 @@ function showPreferences() {
       heading("Startup"), opt("Restore directories on start", restore),
       heading("Terminal"), opt("Scrollback lines (full output is always saved to disk)", scroll),
       opt("Ctrl+click a folder or file name in the output to open it", links),
+      heading("Privacy"), opt("Mask IPs, emails, user names and secrets when copying (details in the viewer)", mask),
       heading("Commands list"), opt("Order", order),
       opt("Analyze one command at a time (off: Analyze opens the whole run)", split),
       heading("Saved output"), opt("Delete saved output older than (days, 0 = never)", days), opt("Disk used", cleanRow),

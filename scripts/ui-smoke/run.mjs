@@ -85,6 +85,25 @@ chord("KeyT", "T", { ctrlKey: true, shiftKey: true });
 await wait(30);
 check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens a tab");
 
+// masking of sensitive details (pure text functions)
+{
+  const { maskText } = await import(pathToFileURL(path.join(root, "src/mask.js")).href);
+  const eq = (input, want, msg) => { const got = maskText(input); check(got === want, `mask: ${msg}: got ${JSON.stringify(got)}`); };
+  eq("connect from 10.1.2.3 to 10.1.2.3 and 192.168.0.9", "connect from <ip-1> to <ip-1> and <ip-2>", "same ip, same label");
+  eq("listening on 127.0.0.1:80 and 0.0.0.0", "listening on 127.0.0.1:80 and 0.0.0.0", "loopback stays");
+  eq("version 1.2.3 build 300", "version 1.2.3 build 300", "not an ip");
+  eq("mail bob@example.com, Bob@Example.com and amy@x.org", "mail <email-1>, <email-1> and <email-2>", "emails");
+  eq("/home/alice/src and C:\\Users\\Bob\\docs", "/home/<user>/src and C:\\Users\\<user>\\docs", "user paths");
+  eq("password=hunter2 token: abc123 api_key=\"x y\"", "password=<secret> token: <secret> api_key=<secret>", "key=value secrets");
+  eq("Authorization: Bearer abcdefghijkl12345", "Authorization: Bearer <secret>", "authorization header");
+  eq("git clone https://bob:pw123@github.com/x/y", "git clone https://<user>:<secret>@github.com/x/y", "url credentials");
+  eq("key AKIAIOSFODNN7EXAMPLE and ghp_0123456789abcdefghijABCDEFGHIJ", "key <secret> and <secret>", "known token formats");
+  eq("mac aa:bb:cc:dd:ee:ff", "mac <mac-1>", "mac address");
+  eq("-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----", "<private key>", "private key block");
+  eq("nothing secret here: 42 lines", "nothing secret here: 42 lines", "plain text untouched");
+  check(maskText("10.1.2.3 bob@x.org", { on: true, ips: false, emails: true }) === "10.1.2.3 <email-1>", "mask: categories can be switched off");
+}
+
 // right-click menu on a selected folder name: its entries must be clickable and reach the backend
 {
   globalThis.__selection = "docs";
