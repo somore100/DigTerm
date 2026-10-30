@@ -463,6 +463,19 @@ fn open_url(url: String) -> Result<(), String> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("Only http and https links can be opened.".into());
     }
+    open_default(&url)
+}
+
+/// Opens a `mailto:` link in the default email app (used by the feedback window). Anything else is refused.
+#[tauri::command]
+fn open_mailto(url: String) -> Result<(), String> {
+    if !url.starts_with("mailto:") {
+        return Err("Only mailto links can be opened here.".into());
+    }
+    open_default(&url)
+}
+
+fn open_default(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut cmd = std::process::Command::new("open");
     #[cfg(target_os = "windows")]
@@ -473,8 +486,63 @@ fn open_url(url: String) -> Result<(), String> {
     };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let mut cmd = std::process::Command::new("xdg-open");
-    cmd.arg(&url);
+    cmd.arg(url);
     spawn_detached(cmd)
+}
+
+fn os_release_name(text: &str) -> Option<String> {
+    text.lines()
+        .find_map(|l| l.strip_prefix("PRETTY_NAME="))
+        .map(|v| v.trim().trim_matches('"').to_string())
+}
+
+fn cpu_model(text: &str) -> Option<String> {
+    text.lines().find(|l| l.starts_with("model name")).and_then(|l| l.split_once(':')).map(|(_, v)| v.trim().to_string())
+}
+
+fn mem_total(text: &str) -> Option<String> {
+    let kb: u64 = text.lines().find_map(|l| l.strip_prefix("MemTotal:"))?.trim().trim_end_matches("kB").trim().parse().ok()?;
+    Some(format!("{:.1} GB", kb as f64 / 1_048_576.0))
+}
+
+/// Graphics adapters from `lspci` output (one line per device); the bus address and revision are dropped.
+fn gpu_names(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| ["VGA compatible controller", "3D controller", "Display controller"].iter().any(|c| l.contains(c)))
+        .filter_map(|l| l.split_once(": ").map(|(_, name)| name))
+        .map(|name| name.split(" (rev").next().unwrap_or(name).trim().to_string())
+        .collect()
+}
+
+/// What the feedback window offers to include, shown to the user before anything is sent: system, CPU, graphics
+/// card, memory and architecture. No host name, user name, serial numbers, addresses or paths.
+#[tauri::command]
+async fn system_info() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    #[cfg(target_os = "linux")]
+    {
+        let read = |p: &str| fs::read_to_string(p).unwrap_or_default();
+        let os = os_release_name(&read("/etc/os-release")).unwrap_or_else(|| "Linux".into());
+        let kernel = read("/proc/sys/kernel/osrelease");
+        out.push(("OS".to_string(), format!("{os}, kernel {}", kernel.trim())));
+        out.push(("CPU".to_string(), cpu_model(&read("/proc/cpuinfo")).unwrap_or_else(|| "unknown".into())));
+        let gpus = std::process::Command::new("lspci")
+            .output()
+            .ok()
+            .map(|o| gpu_names(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default();
+        out.push(("GPU".to_string(), if gpus.is_empty() { "not detected (lspci missing?)".into() } else { gpus.join("; ") }));
+        out.push(("RAM".to_string(), mem_total(&read("/proc/meminfo")).unwrap_or_else(|| "unknown".into())));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        out.push(("OS".to_string(), std::env::consts::OS.to_string()));
+        for k in ["CPU", "GPU", "RAM"] {
+            out.push((k.to_string(), "not available on this platform yet".to_string()));
+        }
+    }
+    out.push(("Architecture".to_string(), std::env::consts::ARCH.to_string()));
+    out
 }
 
 #[tauri::command]
@@ -1385,7 +1453,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
@@ -1627,6 +1695,17 @@ mod tests {
         assert_eq!(g.len(), 1);
         assert_eq!((g[0].first, g[0].count), (1, 4));
         assert!(g[0].summary.as_deref().unwrap().starts_with("⟲ 2-line block × 2: GET /a 200"));
+    }
+
+    #[test]
+    fn system_info_parsers_read_linux_files() {
+        assert_eq!(os_release_name("NAME=Fedora\nPRETTY_NAME=\"Fedora Linux 44 (Workstation)\"\n").as_deref(), Some("Fedora Linux 44 (Workstation)"));
+        assert_eq!(cpu_model("processor\t: 0\nmodel name\t: AMD Ryzen 7 5800X 8-Core Processor\n").as_deref(), Some("AMD Ryzen 7 5800X 8-Core Processor"));
+        assert_eq!(mem_total("MemTotal:       16777216 kB\nMemFree: 1 kB\n").as_deref(), Some("16.0 GB"));
+        let lspci = "00:00.0 Host bridge: Intel Corp\n01:00.0 VGA compatible controller: NVIDIA Corporation GA104 [GeForce RTX 3070] (rev a1)\n";
+        assert_eq!(gpu_names(lspci), vec!["NVIDIA Corporation GA104 [GeForce RTX 3070]".to_string()]);
+        assert!(gpu_names("").is_empty());
+        assert_eq!(cpu_model("nothing"), None);
     }
 
     #[test]

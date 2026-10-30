@@ -5,12 +5,13 @@ import "@xterm/xterm/css/xterm.css";
 import "./style.css";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getVersion } from "@tauri-apps/api/app";
+import { getVersion, getName } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
 import { toast, copiedToast } from "./toast.js";
 import { showContextMenu } from "./ctxmenu.js";
+import { renderFeedbackForm } from "./feedback.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -1198,6 +1199,22 @@ function showAbout() {
   });
 }
 
+function showFeedback() {
+  openDialog("Leave feedback", async (body) => {
+    const [name, version] = await Promise.all([getName().catch(() => "Digterm"), getVersion().catch(() => "unknown")]);
+    renderFeedbackForm(body, {
+      appName: name,
+      appVersion: version,
+      to: "support.somore100@gmail.com",
+      getSystemInfo: () => invoke("system_info"),
+      openMailto: (url) => invoke("open_mailto", { url }),
+      openUrl: (url) => invoke("open_url", { url }),
+      copy: (text) => navigator.clipboard.writeText(text),
+    });
+    body.querySelector(".fb-title")?.focus();
+  });
+}
+
 // ---------------------------------------------------------------- menu
 
 const menu = $("menu");
@@ -1255,6 +1272,7 @@ function renderMenu() {
   sep();
   item("Preferences", "prefs", showPreferences);
   item("Keyboard shortcuts", "shortcuts", showShortcuts);
+  item("Leave feedback…", null, showFeedback);
   item("About Digterm", null, showAbout);
 }
 

@@ -20,6 +20,7 @@ await build({
   alias: {
     "@tauri-apps/api/core": stub("core.js"),
     "@tauri-apps/api/event": stub("event.js"),
+    "@tauri-apps/api/app": stub("app.js"),
     "@tauri-apps/api/window": stub("window.js"),
     "@xterm/addon-fit": stub("xterm.js"),
     "@xterm/addon-search": stub("xterm.js"),
@@ -68,6 +69,38 @@ for (let i = 0; i < count; i++) {
   menu.querySelectorAll("button")[i]?.click();
   await wait(20);
   if (!document.getElementById("dialog-host").hidden) press({ key: "Escape", code: "Escape" });
+}
+
+// feedback window: required fields, system information only when ticked, and a mailto link to the support address
+{
+  document.getElementById("menu-btn").click();
+  [...menu.querySelectorAll("button")].find((b) => /Leave feedback/.test(b.textContent))?.click();
+  await wait(30);
+  const fb = document.querySelector("#dialog-host .fb");
+  check(fb, "the feedback window opens");
+  if (fb) {
+    const set = (sel, v) => { const el = fb.querySelector(sel); el.value = v; el.dispatchEvent(new w.Event("input", { bubbles: true })); };
+    fb.querySelector(".fb-mail").click();
+    await wait(10);
+    check(/title/i.test(fb.querySelector(".fb-warn").textContent), "feedback asks for a title");
+    set(".fb-title", "UI is not working");
+    fb.querySelector(".fb-mail").click();
+    await wait(10);
+    check(/describe/i.test(fb.querySelector(".fb-warn").textContent), "feedback asks for a description");
+    set(".fb-desc", "It froze");
+    check(!/OS: TestOS/.test(fb.querySelector(".fb-preview pre").textContent), "no system information unless ticked");
+    const sys = fb.querySelector(".fb-sys");
+    sys.checked = true;
+    sys.dispatchEvent(new w.Event("change", { bubbles: true }));
+    await wait(20);
+    check(/OS: TestOS/.test(fb.querySelector(".fb-preview pre").textContent), "ticking the box adds the system information to the preview");
+    fb.querySelector(".fb-mail").click();
+    await wait(20);
+    const call = globalThis.__calls.find(([c]) => c === "open_mailto");
+    check(call && call[1].url.startsWith("mailto:support.somore100@gmail.com?subject=%5BDigterm%5D%20%5BBUG%5D%20UI%20is%20not%20working&body="), `feedback opens a mailto link: got ${call?.[1].url}`);
+    check(call && decodeURIComponent(call[1].url).includes("OS: TestOS") && decodeURIComponent(call[1].url).includes("Version: 9.9.9"), "the email body has the version and the system information");
+  }
+  press({ key: "Escape", code: "Escape" });
 }
 
 // shortcuts: split, zoom (terminal and all), zoom pane, overview, new tab
