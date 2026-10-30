@@ -137,6 +137,20 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
     await wait(30);
     check(viewer.querySelector(".an-rows").textContent.includes("a      b    c"), "turning compact off restores the text");
   }
+  if (viewer) {
+    // folded view: "Copy all" gives the folded text, not every line
+    globalThis.__lines = null;
+    globalThis.__groups = [{ first: 0, count: 10, summary: "⟲ 2-line block × 5: x …" }];
+    const mode = viewer.querySelector(".an-mode");
+    mode.value = "blocks";
+    mode.dispatchEvent(new w.Event("change"));
+    await wait(30);
+    check(/collapsed/.test(viewer.querySelector(".an-copy-all").textContent), "copy button says collapsed while folded");
+    viewer.querySelector(".an-copy-all").click();
+    await wait(30);
+    check(copied === "⟲ 2-line block × 5: x …  ×10", `folded copy all gives the folded text: got ${JSON.stringify(copied)}`);
+    globalThis.__groups = null;
+  }
   globalThis.__lines = null;
   document.querySelector("#analyze .an-close")?.click();
   document.getElementById("clear-selected").click();

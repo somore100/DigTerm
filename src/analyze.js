@@ -540,6 +540,7 @@ export async function openAnalyze(block) {
 
   body.addEventListener("scroll", render);
   body.addEventListener("click", (e) => {
+    if (!window.getSelection().isCollapsed && !e.shiftKey) return; // the click that ends a drag: keep the selection
     const row = e.target.closest(".row");
     if (!row) return;
     const line = Number(row.dataset.line);
@@ -699,7 +700,9 @@ export async function openAnalyze(block) {
     jumpTo(n);
   });
   root.querySelector(".an-copy-sel").onclick = (e) => {
-    if (tsel) copyText(e.target, tselText);
+    const native = nativeSelText();
+    if (native) copyText(e.target, async () => native);
+    else if (tsel) copyText(e.target, tselText);
     else if (sel) copyText(e.target, () => textFor(sel[0], sel[1] + 1));
   };
   // --- compact view
@@ -780,7 +783,9 @@ export async function openAnalyze(block) {
     e.preventDefault();
     const btn = root.querySelector(".an-copy-sel");
     const items = [];
-    if (tsel) items.push(["Copy selection", () => copyText(btn, tselText)]);
+    const native = nativeSelText();
+    if (native) items.push(["Copy selection", () => copyText(btn, async () => native)]);
+    else if (tsel) items.push(["Copy selection", () => copyText(btn, tselText)]);
     else if (sel) items.push(["Copy selection", () => copyText(btn, () => textFor(sel[0], sel[1] + 1))]);
     items.push([collapsed ? "Copy all (collapsed)" : "Copy all", () => copyText(copyAllEl, () => (collapsed ? collapsedText() : textFor(0, total)))]);
     showContextMenu(e.clientX, e.clientY, items);
@@ -853,11 +858,11 @@ export async function openAnalyze(block) {
 
   // Copying a mouse selection: build the text from the rows ourselves so every row ends in a newline
   // (also folded rows) and line numbers and "×N" badges are left out.
-  body.addEventListener("copy", (e) => {
+  function nativeSelText() {
     const s = window.getSelection();
-    if (!s || s.isCollapsed || !s.rangeCount) return;
+    if (!s || s.isCollapsed || !s.rangeCount) return "";
     const range = s.getRangeAt(0);
-    if (!body.contains(range.commonAncestorContainer)) return;
+    if (!body.contains(range.commonAncestorContainer)) return "";
     const part = (el) => {
       const r = document.createRange();
       r.selectNodeContents(el);
@@ -870,10 +875,18 @@ export async function openAnalyze(block) {
       if (!range.intersectsNode(row)) continue;
       lines.push([...row.querySelectorAll(".tx")].filter((t) => range.intersectsNode(t)).map(part).join(""));
     }
-    if (!lines.length) return;
-    e.clipboardData.setData("text/plain", maskCopy(lines.join("\n")));
+    return lines.join("\n");
+  }
+  body.addEventListener("copy", (e) => {
+    const text = nativeSelText();
+    if (!text) return;
+    e.clipboardData.setData("text/plain", maskCopy(text));
     copiedToast();
     e.preventDefault();
+  });
+  // Pressing a toolbar button must not clear the mouse selection (the buttons are not selectable text).
+  root.querySelector(".an-bar").addEventListener("mousedown", (e) => {
+    if (e.target.closest("button")) e.preventDefault();
   });
 
   // the sub-line width follows the viewer's width
