@@ -77,9 +77,11 @@ open any command's output in a viewer built for very large outputs.
   only warning and error lines (everything else collapses into `⋯ N lines hidden` rows). Uses the same word lists as the
   highlighting.
 - Zoom with Ctrl +/−/0 or Ctrl+wheel.
-- **Leave feedback…** (main menu): bug report, suggestion or question with an optional, previewed list of your computer
-  specifications. It opens your email app (or Gmail, or copies the text) with the report ready; nothing is sent until you
-  press Send, and no email password is stored in the app.
+- **Leave feedback…** (main menu): bug report, suggestion or question, with an optional list of your computer
+  specifications that you can preview before anything leaves the app. **Send** posts the report over HTTPS to a small
+  relay (`docs/feedback-relay.gs`, a Google Apps Script that forwards it to the support inbox); the relay address lives
+  in `feedback.json`, and no email password is stored in the app. Open in email app, Open in Gmail and Copy report
+  are the fallbacks.
 
 **Privacy:** everything stays on your machine. Nothing is uploaded, and no network access is needed.
 

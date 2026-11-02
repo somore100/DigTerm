@@ -71,8 +71,12 @@ for (let i = 0; i < count; i++) {
   if (!document.getElementById("dialog-host").hidden) press({ key: "Escape", code: "Escape" });
 }
 
-// feedback window: required fields, system information only when ticked, and a mailto link to the support address
+// feedback window: required fields, system information only when ticked, relay POST (fetch is stubbed: nothing is sent)
 {
+  const cfgFile = JSON.parse(fs.readFileSync(path.join(root, "feedback.json"), "utf8"));
+  const posts = [];
+  let answer = async () => ({ ok: true, status: 200, text: async () => '{"ok":true}' });
+  globalThis.fetch = async (url, init) => { posts.push([url, init]); return answer(); };
   document.getElementById("menu-btn").click();
   [...menu.querySelectorAll("button")].find((b) => /Leave feedback/.test(b.textContent))?.click();
   await wait(30);
@@ -80,26 +84,66 @@ for (let i = 0; i < count; i++) {
   check(fb, "the feedback window opens");
   if (fb) {
     const set = (sel, v) => { const el = fb.querySelector(sel); el.value = v; el.dispatchEvent(new w.Event("input", { bubbles: true })); };
-    fb.querySelector(".fb-mail").click();
+    const warnText = () => fb.querySelector(".fb-warn").textContent;
+    check(cfgFile.endpoint && !fb.querySelector(".fb-send").hidden, "Send is offered when feedback.json has an endpoint");
+    fb.querySelector(".fb-send").click();
     await wait(10);
-    check(/title/i.test(fb.querySelector(".fb-warn").textContent), "feedback asks for a title");
+    check(/title/i.test(warnText()), "feedback asks for a title");
+    set(".fb-title", "abc");
+    fb.querySelector(".fb-send").click();
+    await wait(10);
+    check(/too short/i.test(warnText()), "a very short title is refused");
     set(".fb-title", "UI is not working");
-    fb.querySelector(".fb-mail").click();
+    fb.querySelector(".fb-send").click();
     await wait(10);
-    check(/describe/i.test(fb.querySelector(".fb-warn").textContent), "feedback asks for a description");
+    check(/describe/i.test(warnText()), "feedback asks for a description");
     set(".fb-desc", "It froze");
+    fb.querySelector(".fb-send").click();
+    await wait(10);
+    check(/too short/i.test(warnText()), "a very short description is refused");
+    check(posts.length === 0, "nothing is posted while the form is invalid");
+    set(".fb-desc", "The window froze right after startup");
     check(!/OS: TestOS/.test(fb.querySelector(".fb-preview pre").textContent), "no system information unless ticked");
+    check(/\(not included\)/.test(fb.querySelector(".fb-preview pre").textContent), "the preview says system information is not included");
     const sys = fb.querySelector(".fb-sys");
     sys.checked = true;
     sys.dispatchEvent(new w.Event("change", { bubbles: true }));
     await wait(20);
-    check(/OS: TestOS/.test(fb.querySelector(".fb-preview pre").textContent), "ticking the box adds the system information to the preview");
+    const preview = fb.querySelector(".fb-preview pre").textContent;
+    check(/OS: TestOS/.test(preview) && /App version: 9\.9\.9/.test(preview), "ticking the box adds the system information to the preview");
+
+    // a failing server: an error is shown and Send works again
+    answer = async () => { throw new TypeError("offline"); };
+    fb.querySelector(".fb-send").click();
+    await wait(20);
+    check(/Could not confirm/.test(warnText()) && !fb.querySelector(".fb-send").disabled, "a failed send shows an error and can be retried");
+    answer = async () => ({ ok: false, status: 500, text: async () => "" });
+    fb.querySelector(".fb-send").click();
+    await wait(20);
+    check(/answered 500/.test(warnText()), "a server error is reported");
+
+    // success: the documented JSON payload goes to the configured endpoint
+    answer = async () => ({ ok: true, status: 200, text: async () => '{"ok": true}' });
+    posts.length = 0;
+    fb.querySelector(".fb-send").click();
+    await wait(20);
+    const [url, init] = posts[0] ?? [];
+    check(url === cfgFile.endpoint && init?.method === "POST", "Send posts to the endpoint from feedback.json");
+    check(init?.headers?.["Content-Type"] === "text/plain;charset=utf-8", "the post is a simple text/plain request");
+    const payload = init ? JSON.parse(init.body) : {};
+    check(payload.to === cfgFile.to && payload.app === "Digterm" && payload.version === "9.9.9" && payload.type === "BUG", `payload has to, app, version, type: got ${JSON.stringify(payload).slice(0, 120)}`);
+    check(payload.subject === "[Digterm] [BUG] UI is not working", `subject format: got ${payload.subject}`);
+    check(payload.body?.startsWith("== FEEDBACK REPORT ==") && payload.body.includes("OS: TestOS") && payload.body.includes("The window froze right after startup"), "the body is the structured report with the system information");
+    check(fb.querySelector(".fb-send").disabled && /Thank you/.test(fb.querySelector(".fb-note").textContent), "success is shown and Send is disabled");
+    check(!/@|\/home\//.test(payload.body.split("== SYSTEM")[1] ?? ""), "the system section has no addresses or paths");
+
+    // the fallback buttons still work
     fb.querySelector(".fb-mail").click();
     await wait(20);
     const call = globalThis.__calls.find(([c]) => c === "open_mailto");
-    check(call && call[1].url.startsWith("mailto:support.somore100@gmail.com?subject=%5BDigterm%5D%20%5BBUG%5D%20UI%20is%20not%20working&body="), `feedback opens a mailto link: got ${call?.[1].url}`);
-    check(call && decodeURIComponent(call[1].url).includes("OS: TestOS") && decodeURIComponent(call[1].url).includes("Version: 9.9.9"), "the email body has the version and the system information");
+    check(call && call[1].url.startsWith(`mailto:${cfgFile.to}?subject=%5BDigterm%5D%20%5BBUG%5D%20UI%20is%20not%20working&body=`), `feedback opens a mailto link: got ${call?.[1].url}`);
   }
+  delete globalThis.fetch;
   press({ key: "Escape", code: "Escape" });
 }
 

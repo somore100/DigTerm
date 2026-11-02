@@ -490,22 +490,26 @@ fn open_default(url: &str) -> Result<(), String> {
     spawn_detached(cmd)
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn os_release_name(text: &str) -> Option<String> {
     text.lines()
         .find_map(|l| l.strip_prefix("PRETTY_NAME="))
         .map(|v| v.trim().trim_matches('"').to_string())
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn cpu_model(text: &str) -> Option<String> {
     text.lines().find(|l| l.starts_with("model name")).and_then(|l| l.split_once(':')).map(|(_, v)| v.trim().to_string())
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn mem_total(text: &str) -> Option<String> {
     let kb: u64 = text.lines().find_map(|l| l.strip_prefix("MemTotal:"))?.trim().trim_end_matches("kB").trim().parse().ok()?;
     Some(format!("{:.1} GB", kb as f64 / 1_048_576.0))
 }
 
 /// Graphics adapters from `lspci` output (one line per device); the bus address and revision are dropped.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn gpu_names(text: &str) -> Vec<String> {
     text.lines()
         .filter(|l| ["VGA compatible controller", "3D controller", "Display controller"].iter().any(|c| l.contains(c)))
@@ -514,35 +518,103 @@ fn gpu_names(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// What the feedback window offers to include, shown to the user before anything is sent: system, CPU, graphics
-/// card, memory and architecture. No host name, user name, serial numbers, addresses or paths.
-#[tauri::command]
-async fn system_info() -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    #[cfg(target_os = "linux")]
+/// Runs a program and returns its trimmed output; empty on any failure. No console window flashes on Windows.
+fn run_text(program: &str, args: &[&str]) -> String {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    #[cfg(target_os = "windows")]
     {
-        let read = |p: &str| fs::read_to_string(p).unwrap_or_default();
-        let os = os_release_name(&read("/etc/os-release")).unwrap_or_else(|| "Linux".into());
-        let kernel = read("/proc/sys/kernel/osrelease");
-        out.push(("OS".to_string(), format!("{os}, kernel {}", kernel.trim())));
-        out.push(("CPU".to_string(), cpu_model(&read("/proc/cpuinfo")).unwrap_or_else(|| "unknown".into())));
-        let gpus = std::process::Command::new("lspci")
-            .output()
-            .ok()
-            .map(|o| gpu_names(&String::from_utf8_lossy(&o.stdout)))
-            .unwrap_or_default();
-        out.push(("GPU".to_string(), if gpus.is_empty() { "not detected (lspci missing?)".into() } else { gpus.join("; ") }));
-        out.push(("RAM".to_string(), mem_total(&read("/proc/meminfo")).unwrap_or_else(|| "unknown".into())));
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        out.push(("OS".to_string(), std::env::consts::OS.to_string()));
-        for k in ["CPU", "GPU", "RAM"] {
-            out.push((k.to_string(), "not available on this platform yet".to_string()));
+    cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+}
+
+/// "Chipset Model: Apple M1" lines from macOS `system_profiler SPDisplaysDataType`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn chipset_models(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| l.contains("Chipset Model"))
+        .filter_map(|l| l.split_once(':').map(|(_, v)| v.trim().to_string()))
+        .collect()
+}
+
+/// PCI ids of the display adapters, for Linux systems without `lspci`.
+#[cfg(target_os = "linux")]
+fn gpu_ids_from_sysfs() -> Vec<String> {
+    let mut cards: Vec<String> = fs::read_dir("/sys/class/drm")
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.len() > 4 && n.starts_with("card") && n[4..].chars().all(|c| c.is_ascii_digit()))
+                .collect()
+        })
+        .unwrap_or_default();
+    cards.sort();
+    let mut out = Vec::new();
+    for c in cards {
+        let id = |f: &str| fs::read_to_string(format!("/sys/class/drm/{c}/device/{f}")).unwrap_or_default().trim().trim_start_matches("0x").to_string();
+        let (vendor, device) = (id("vendor"), id("device"));
+        if !vendor.is_empty() && !device.is_empty() {
+            out.push(format!("PCI {vendor}:{device}"));
         }
     }
-    out.push(("Architecture".to_string(), std::env::consts::ARCH.to_string()));
     out
+}
+
+/// What the feedback window offers to include, shown to the user before anything is sent: system and version,
+/// CPU, graphics card, memory and architecture. No host name, user name, serial numbers, addresses or paths.
+#[tauri::command]
+async fn system_info() -> Vec<(String, String)> {
+    let unknown = |s: String| if s.is_empty() { "unknown".to_string() } else { s };
+    #[cfg(target_os = "linux")]
+    let (os, cpu, gpu, ram) = {
+        let read = |p: &str| fs::read_to_string(p).unwrap_or_default();
+        let os = os_release_name(&read("/etc/os-release")).unwrap_or_else(|| "Linux".into());
+        let mut gpus = gpu_names(&run_text("lspci", &[]));
+        if gpus.is_empty() {
+            gpus = gpu_ids_from_sysfs();
+        }
+        (
+            format!("{os}, kernel {}", read("/proc/sys/kernel/osrelease").trim()),
+            cpu_model(&read("/proc/cpuinfo")).unwrap_or_default(),
+            gpus.join("; "),
+            mem_total(&read("/proc/meminfo")).unwrap_or_default(),
+        )
+    };
+    #[cfg(target_os = "macos")]
+    let (os, cpu, gpu, ram) = {
+        let bytes: f64 = run_text("sysctl", &["-n", "hw.memsize"]).parse().unwrap_or(0.0);
+        (
+            format!("{} {}", run_text("sw_vers", &["-productName"]), run_text("sw_vers", &["-productVersion"])).trim().to_string(),
+            run_text("sysctl", &["-n", "machdep.cpu.brand_string"]),
+            chipset_models(&run_text("system_profiler", &["SPDisplaysDataType"])).join("; "),
+            if bytes > 0.0 { format!("{:.1} GB", bytes / 1_073_741_824.0) } else { String::new() },
+        )
+    };
+    #[cfg(target_os = "windows")]
+    let (os, cpu, gpu, ram) = {
+        let ps = |script: &str| run_text("powershell", &["-NoProfile", "-Command", script]);
+        (
+            ps("(Get-CimInstance Win32_OperatingSystem | ForEach-Object { $_.Caption + ' ' + $_.Version })"),
+            ps("(Get-CimInstance Win32_Processor | Select-Object -First 1).Name"),
+            ps("(Get-CimInstance Win32_VideoController).Name").lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; "),
+            {
+                let gb = ps("[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)");
+                if gb.is_empty() { gb } else { format!("{gb} GB") }
+            },
+        )
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    let (os, cpu, gpu, ram) = (std::env::consts::OS.to_string(), String::new(), String::new(), String::new());
+    vec![
+        ("OS".to_string(), unknown(os)),
+        ("Architecture".to_string(), std::env::consts::ARCH.to_string()),
+        ("CPU".to_string(), unknown(cpu)),
+        ("CPU cores".to_string(), std::thread::available_parallelism().map(|n| n.get().to_string()).unwrap_or_else(|_| "unknown".into())),
+        ("GPU".to_string(), unknown(gpu)),
+        ("RAM".to_string(), unknown(ram)),
+    ]
 }
 
 #[tauri::command]
@@ -1705,6 +1777,7 @@ mod tests {
         let lspci = "00:00.0 Host bridge: Intel Corp\n01:00.0 VGA compatible controller: NVIDIA Corporation GA104 [GeForce RTX 3070] (rev a1)\n";
         assert_eq!(gpu_names(lspci), vec!["NVIDIA Corporation GA104 [GeForce RTX 3070]".to_string()]);
         assert!(gpu_names("").is_empty());
+        assert_eq!(chipset_models("Graphics/Displays:\n  Apple M1:\n    Chipset Model: Apple M1\n    Type: GPU\n"), vec!["Apple M1".to_string()]);
         assert_eq!(cpu_model("nothing"), None);
     }
 

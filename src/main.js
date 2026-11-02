@@ -12,6 +12,7 @@ import { maskCopy, loadMask, saveMask } from "./mask.js";
 import { toast, copiedToast } from "./toast.js";
 import { showContextMenu } from "./ctxmenu.js";
 import { renderFeedbackForm } from "./feedback.js";
+import feedbackConfig from "../feedback.json"; // {to, endpoint}: the relay address is configuration, never a secret
 
 const $ = (id) => document.getElementById(id);
 
@@ -1205,7 +1206,8 @@ function showFeedback() {
     renderFeedbackForm(body, {
       appName: name,
       appVersion: version,
-      to: "support.somore100@gmail.com",
+      to: feedbackConfig.to,
+      endpoint: (feedbackConfig.endpoint || "").trim(),
       getSystemInfo: () => invoke("system_info"),
       openMailto: (url) => invoke("open_mailto", { url }),
       openUrl: (url) => invoke("open_url", { url }),
