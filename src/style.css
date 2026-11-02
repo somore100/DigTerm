@@ -238,3 +238,7 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 .fb .fb-preview { margin-top: 10px; font-size: 12px; }
 .fb .fb-preview pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; max-height: 180px; overflow-y: auto; user-select: text; -webkit-user-select: text; }
 .fb .fb-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+#block-lists .block-list li.running { opacity: 0.85; }
+#block-lists .running-label { color: var(--rep-fg); }
+#block-lists .block-list li[hidden] { display: none; }

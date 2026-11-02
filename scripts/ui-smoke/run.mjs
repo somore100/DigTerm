@@ -162,6 +162,25 @@ chord("KeyT", "T", { ctrlKey: true, shiftKey: true });
 await wait(30);
 check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens a tab");
 
+// a command that has started shows as "running" until its finished block arrives
+{
+  const sid = globalThis.__calls.filter(([c]) => c === "pty_spawn").length;
+  const items = () => [...document.querySelectorAll(".block-list li")];
+  const before = items().length;
+  await globalThis.__events["pty-block-start"]({ payload: { session: sid, id: 50, cmd_start: 1000, start: 1010 } });
+  const running = items().find((li) => li.classList.contains("running"));
+  check(running && /running/.test(running.textContent) && items().length === before + 1, "a started command appears in the list as running");
+  check(running?.hidden, "a running row stays hidden for the first moments so quick commands do not flicker");
+  await wait(450);
+  check(!running?.hidden, "a command that takes a moment is shown as running");
+  await globalThis.__events["pty-block-start"]({ payload: { session: sid, id: 50, cmd_start: 1000, start: 1010 } });
+  check(items().length === before + 1, "a repeated start note does not add a second row");
+  await globalThis.__events["pty-block"]({ payload: { session: sid, id: 50, cmd_start: 1000, start: 1010, end: 1040, lines: 3, exit: 0, ms: 1500 } });
+  check(!items().some((li) => li.classList.contains("running")) && items().length === before + 1, "the running row becomes the finished command");
+  await globalThis.__events["pty-block-start"]({ payload: { session: sid, id: 50, cmd_start: 1000, start: 1010 } });
+  check(!items().some((li) => li.classList.contains("running")), "a late start note for a finished command is ignored");
+}
+
 // ticking several commands and analyzing them together
 {
   const sid = globalThis.__calls.filter(([c]) => c === "pty_spawn").length; // the newest terminal is the active one

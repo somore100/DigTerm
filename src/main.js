@@ -156,6 +156,8 @@ class Pane {
     this.cwd = cwd ?? null;
     this.lines = 0;
     this.blocks = []; // finished commands, in order
+    this.running = null; // {li, timer, id}: the command that has started but not finished
+    this.doneId = 0; // id of the newest finished command
     this.picked = new Set(); // indexes of commands ticked for "analyze several together"
     this.pickBoxes = [];
     this.lastPick = null;
@@ -356,7 +358,47 @@ class Pane {
     if (this.pickBoxes[i]) this.pickBoxes[i].checked = on;
   }
 
+  // A command whose output has started: shown in the list with a live timer until its finished block arrives.
+  startRunning(b) {
+    if (this.doneId >= b.id) return; // already finished (a start note can arrive after a very quick command)
+    if (this.running) {
+      if (b.id <= this.running.id) return;
+      this.clearRunning();
+    }
+    const li = document.createElement("li");
+    li.className = "running";
+    li.hidden = true; // shown only if the command takes a moment, so quick commands do not flicker in and out
+    const head = document.createElement("span");
+    head.className = "block-head";
+    const numEl = Object.assign(document.createElement("span"), { className: "cmd-num", textContent: `${this.blocks.length + 1}.` });
+    const cmdText = Object.assign(document.createElement("span"), { className: "cmd-text" });
+    invoke("read_block", { session: b.session, start: b.cmd_start, end: b.start })
+      .then((t) => { cmdText.textContent = cmdText.title = t.split("\n").map((l) => l.trim()).filter(Boolean).join(" "); })
+      .catch(() => {});
+    head.append(numEl, cmdText);
+    const label = Object.assign(document.createElement("span"), { className: "running-label" });
+    const t0 = Date.now();
+    const tick = () => { label.textContent = `running · ${formatDuration(Date.now() - t0)}`; };
+    tick();
+    const info = Object.assign(document.createElement("span"), { className: "block-info" });
+    info.append(head, label);
+    li.append(info);
+    this.blocksEl.append(li);
+    this.running = { li, id: b.id, timer: setInterval(tick, 500), reveal: setTimeout(() => { li.hidden = false; }, 400) };
+    if (prefs.newestBottom) scrollBlocksToEnd();
+  }
+
+  clearRunning() {
+    if (!this.running) return;
+    clearInterval(this.running.timer);
+    clearTimeout(this.running.reveal);
+    this.running.li.remove();
+    this.running = null;
+  }
+
   addBlock(b) {
+    this.clearRunning();
+    this.doneId = Math.max(this.doneId, b.id);
     this.blocks.push(b);
     const num = this.blocks.length;
     const li = document.createElement("li");
@@ -445,6 +487,7 @@ class Pane {
   }
 
   dispose() {
+    this.clearRunning();
     this.term.dispose();
     this.el.remove();
     this.blocksEl.remove();
@@ -1324,6 +1367,7 @@ await listen("tauri://drag-drop", (e) => {
   if (path) openAnalyze({ label: `File: ${basename(path)}`, importPath: path });
 });
 await listen("pty-block", (e) => panes.get(e.payload.session)?.addBlock(e.payload));
+await listen("pty-block-start", (e) => panes.get(e.payload.session)?.startRunning(e.payload));
 await listen("pty-exit", (e) => {
   const p = panes.get(e.payload);
   if (p) closePane(p); // the shell ended, like closing a terminal window's last shell

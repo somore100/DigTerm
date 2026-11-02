@@ -87,6 +87,15 @@ struct Block {
     ms: u64,
 }
 
+/// A command whose output has started but that has not finished yet (shown as "running" in the Commands list).
+#[derive(Clone, Serialize)]
+struct BlockStart {
+    session: u32,
+    id: u32,
+    cmd_start: u64,
+    start: u64,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum St {
     Normal,
@@ -105,11 +114,12 @@ struct Scanner {
     b_pos: Option<u64>,
     t0: Option<Instant>,
     next_id: u32,
+    started: Option<(u32, u64, u64)>, // id, command start, output start of the newest command not yet reported
 }
 
 impl Scanner {
     fn new() -> Self {
-        Scanner { st: St::Normal, esc_pos: 0, osc: Vec::new(), cur: None, b_pos: None, t0: None, next_id: 1 }
+        Scanner { st: St::Normal, esc_pos: 0, osc: Vec::new(), cur: None, b_pos: None, t0: None, next_id: 1, started: None }
     }
 
     fn feed(&mut self, chunk: &[u8], base: u64, emit: &mut impl FnMut(Block)) {
@@ -158,6 +168,11 @@ impl Scanner {
         }
     }
 
+    /// The newest command that started since the last call (None if no command started).
+    fn take_started(&mut self) -> Option<(u32, u64, u64)> {
+        self.started.take()
+    }
+
     fn finish(&mut self, end_pos: u64, emit: &mut impl FnMut(Block)) {
         let Some(rest) = self.osc.strip_prefix(b"133;") else { return };
         match rest.first() {
@@ -165,6 +180,7 @@ impl Scanner {
             Some(b'C') => {
                 let cmd_start = self.b_pos.take().unwrap_or(end_pos);
                 self.cur = Some((self.next_id, end_pos, 0, cmd_start));
+                self.started = Some((self.next_id, cmd_start, end_pos));
                 self.t0 = Some(Instant::now());
                 self.next_id += 1;
             }
@@ -302,6 +318,11 @@ fn pty_spawn(
                         block.session = id;
                         let _ = app.emit("pty-block", block);
                     });
+                    // reported after any finished block of this chunk, so a command that started and ended inside
+                    // one chunk reaches the window as "finished" first and its late "started" note is ignored there
+                    if let Some((bid, cmd_start, start)) = scanner.take_started() {
+                        let _ = app.emit("pty-block-start", BlockStart { session: id, id: bid, cmd_start, start });
+                    }
                     offset += n as u64;
                     if on_data.send(InvokeResponseBody::Raw(chunk.to_vec())).is_err() {
                         break;
@@ -1575,6 +1596,23 @@ mod tests {
         assert_eq!(lines, 2);
         assert_eq!(&data[start as usize..end as usize], b"a\nb\n");
         assert_eq!(&data[cmd_start as usize..start as usize - C.len()], b"ls\r\n");
+    }
+
+    #[test]
+    fn scanner_reports_a_command_that_is_still_running() {
+        let mut sc = Scanner::new();
+        let data = cat(&[A, b"$ ", B, b"sleep 5", b"\r\n", C, b"partial output"]);
+        let mut finished = 0;
+        sc.feed(&data, 0, &mut |_| finished += 1);
+        assert_eq!(finished, 0);
+        let (id, cmd_start, start) = sc.take_started().expect("a started command");
+        assert_eq!(id, 1);
+        assert_eq!(&data[cmd_start as usize..start as usize - C.len()], b"sleep 5\r\n");
+        assert_eq!(sc.take_started(), None, "reported only once");
+        // finishing it later still produces the normal block
+        let mut ids = Vec::new();
+        sc.feed(&d("0"), data.len() as u64, &mut |b| ids.push(b.id));
+        assert_eq!(ids, vec![1]);
     }
 
     #[test]
