@@ -12,6 +12,7 @@ import { maskCopy, loadMask, saveMask } from "./mask.js";
 import { toast, copiedToast } from "./toast.js";
 import { showContextMenu } from "./ctxmenu.js";
 import { renderFeedbackForm } from "./feedback.js";
+import { cwdForLine } from "./folders.js";
 import feedbackConfig from "../feedback.json"; // {to, endpoint}: the relay address is configuration, never a secret
 
 const $ = (id) => document.getElementById(id);
@@ -202,6 +203,7 @@ class Pane {
     this.term.open(this.termEl);
     this.fit.fit();
     this.buildFindBar();
+    this.registerCommandMarks();
     this.registerFolderLinks();
 
     this.term.onData((data) => { if (this.id !== null) invoke("pty_write", { id: this.id, data }); });
@@ -288,17 +290,34 @@ class Pane {
     if (activePane === this) updateStatus();
   }
 
+  // Remembers the shell's folder at every command start (OSC 133;C), so Ctrl+click on old output resolves correctly.
+  registerCommandMarks() {
+    this.marks = [];
+    this.term.parser?.registerOscHandler(133, (data) => {
+      if (data[0] === "C") {
+        const marker = this.term.registerMarker(0);
+        if (marker) {
+          const mark = { marker, cwd: null };
+          this.marks = this.marks.filter((m) => !m.marker.isDisposed);
+          this.marks.push(mark);
+          if (this.id !== null) invoke("pty_cwd", { id: this.id }).then((c) => { mark.cwd = c; }).catch(() => {});
+        }
+      }
+      return false;
+    });
+  }
+
   // Words in the output that are folders or files (for example in `ls` output): Ctrl+click opens them,
   // right-click shows all choices. Looked up on disk relative to the terminal's current folder.
   registerFolderLinks() {
     const cache = new Map(); // "cwd\0name" -> {kind, path}
     let stamp = 0;
-    const key = (n) => `${this.cwd}\0${n}`;
-    const lookup = async (names) => {
+    const lookup = async (names, cwd = this.cwd) => {
+      const key = (n) => `${cwd}\0${n}`;
       if (Date.now() - stamp > 5000) { cache.clear(); stamp = Date.now(); }
       const unknown = [...new Set(names)].filter((n) => !cache.has(key(n)) && !asUrl(n));
       if (unknown.length) {
-        const res = await invoke("path_info", { cwd: this.cwd, names: unknown });
+        const res = await invoke("path_info", { cwd, names: unknown });
         unknown.forEach((n, i) => cache.set(key(n), res[i]));
       }
       return names.map((n) => (asUrl(n) ? { kind: "url", path: asUrl(n) } : cache.get(key(n))));
@@ -310,7 +329,7 @@ class Pane {
         const words = wordsOf(this.term.buffer.active.getLine(y - 1)?.translateToString(true) ?? "");
         if (!words.length) return done(undefined);
         let infos;
-        try { infos = await lookup(words.map((w) => w.name)); } catch { return done(undefined); }
+        try { infos = await lookup(words.map((w) => w.name), cwdForLine(this.marks, y - 1, this.cwd)); } catch { return done(undefined); }
         done(words.flatMap((w, i) => (infos[i]?.kind ? [{
           range: { start: { x: w.x1, y }, end: { x: w.x2, y } },
           text: w.name,
@@ -321,12 +340,13 @@ class Pane {
 
     this.termEl.addEventListener("contextmenu", async (e) => {
       const name = this.targetAt(e);
+      const cwd = cwdForLine(this.marks, this.targetLine ?? Infinity, this.cwd);
       const selected = this.term.getSelection();
       e.preventDefault();
       const items = [];
       let info = null;
       if (name && this.id !== null) {
-        try { info = (await lookup([name]))[0]; } catch {}
+        try { info = (await lookup([name], cwd))[0]; } catch {}
       }
       if (info?.kind === "url") items.push(["Open in browser", () => openTarget(this, info, "browser")]);
       if (info?.kind === "dir") items.push(["Open folder here (cd)", () => openTarget(this, info, "cd")], ["Open in file manager", () => openTarget(this, info, "default")]);
@@ -341,14 +361,16 @@ class Pane {
 
   // The word under the mouse (or the selected text when it is a single line), without quotes.
   targetAt(e) {
+    this.targetLine = null; // the buffer line under the mouse; decides which command's folder names resolve in
+    const screen = this.termEl.querySelector(".xterm-screen");
+    const r = screen?.getBoundingClientRect();
+    const row = r ? Math.floor((e.clientY - r.top) / (r.height / this.term.rows)) : 0;
+    const buf = this.term.buffer.active;
+    if (r) this.targetLine = buf.viewportY + row;
     const sel = this.term.getSelection().trim();
     if (sel && !sel.includes("\n") && sel.length < 512) return cleanName(sel);
-    const screen = this.termEl.querySelector(".xterm-screen");
-    if (!screen) return null;
-    const r = screen.getBoundingClientRect();
+    if (!r) return null;
     const col = Math.floor((e.clientX - r.left) / (r.width / this.term.cols));
-    const row = Math.floor((e.clientY - r.top) / (r.height / this.term.rows));
-    const buf = this.term.buffer.active;
     const line = buf.getLine(buf.viewportY + row)?.translateToString(true);
     return wordsOf(line ?? "").find((w) => col >= w.x1 - 1 && col <= w.x2 - 1)?.name ?? null;
   }

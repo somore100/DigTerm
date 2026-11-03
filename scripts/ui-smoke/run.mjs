@@ -162,6 +162,21 @@ chord("KeyT", "T", { ctrlKey: true, shiftKey: true });
 await wait(30);
 check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens a tab");
 
+// folder of the command that printed a line: the newest marker at or above the line wins
+{
+  const { cwdForLine } = await import(pathToFileURL(path.join(root, "src/folders.js")).href);
+  const mk = (line, cwd, isDisposed = false) => ({ marker: { line, isDisposed }, cwd });
+  const marks = [mk(10, "/a"), mk(20, "/b"), mk(30, null), mk(40, "/gone", true)];
+  check(cwdForLine(marks, 5, "/now") === "/now", "output above every marker uses the current folder");
+  check(cwdForLine(marks, 10, "/now") === "/a" && cwdForLine(marks, 19, "/now") === "/a", "output of the first command uses its folder");
+  check(cwdForLine(marks, 25, "/now") === "/b", "output of a later command uses that command's folder");
+  check(cwdForLine(marks, 35, "/now") === "/now", "a command whose folder is unknown falls back to the current folder");
+  check(cwdForLine(marks, 99, "/now") === "/now", "markers scrolled out of the buffer are ignored");
+  check(typeof globalThis.__osc?.[133] === "function", "each terminal listens for the command-start marker");
+  const fake = globalThis.__osc[133];
+  check(fake("A") === false && fake("C") === false, "the marker handler never swallows the sequence");
+}
+
 // a command that has started shows as "running" until its finished block arrives
 {
   const sid = globalThis.__calls.filter(([c]) => c === "pty_spawn").length;

@@ -1,5 +1,6 @@
 export class Terminal {
-  constructor(o) { this.options = { ...o }; this.rows = 24; this.cols = 80; this.buffer = { active: { length: 0, getLine() { return null; } } }; }
+  constructor(o) { this.options = { ...o }; this.rows = 24; this.cols = 80; this.buffer = { active: { length: 0, getLine() { return null; } } }; this.parser = { registerOscHandler(id, fn) { (globalThis.__osc ??= {})[id] = fn; } }; }
+  registerMarker() { return { line: 0, isDisposed: false }; }
   loadAddon() {} open() {} onData() {} onResize() {} registerLinkProvider() {} write() {} dispose() {} focus() {} getSelection() { return globalThis.__selection ?? ""; }
 }
 export class FitAddon { fit() {} }

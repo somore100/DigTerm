@@ -51,7 +51,7 @@ open any command's output in a viewer built for very large outputs.
   other file in its default application, and a `http(s)` or `localhost:port` link in the browser.
 - **Right-click** the same names (or select one first) for all choices: open folder here, open in file manager, open in
   the viewer, show in the terminal (`cat`), open with the default app, show in file manager, open in browser, copy path.
-- Can be switched off in Preferences. Names are looked up in the terminal's current folder.
+- Can be switched off in Preferences. Names are looked up in the folder the command that printed them ran in (Linux), otherwise in the terminal's current folder.
 
 **From the command line**
 - `digterm file.log` opens a text file in the viewer.
@@ -164,7 +164,7 @@ Roughly in the order I plan to do them. Nothing here is promised, and the order 
 - Command text, duration and numbering in the Commands list; history of earlier sessions and cleanup of old saved
   output; jumping between errors and a severity filter; Ctrl+click and right-click on folders, files and links;
   whole-run analysis and copy; masking on copy; `digterm file` / `cmd | digterm -`; multi-line block folding; compact
-  view with best compression; Rust unit tests.
+  view with best compression; running commands and each command's folder; Leave feedback; Rust unit tests in CI.
 
 **Next**
 - Export or copy a viewer selection with sensitive details (usernames, IP addresses, paths) masked.
