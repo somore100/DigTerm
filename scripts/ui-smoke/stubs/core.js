@@ -5,8 +5,10 @@ export async function invoke(cmd, args) {
   calls.push([cmd, args]);
   if (cmd === "pty_spawn") { n++; return { id: n, run_file: `/tmp/run${n}` }; }
   if (cmd === "home_dir" || cmd === "pty_cwd") return "/home/user";
-  if (cmd === "path_info") return args.names.map((name) => ({ kind: name === "docs" ? "dir" : "text", path: `/home/user/${name}` }));
+  if (cmd === "path_info") return args.names.map((name) => ({ kind: name === "docs" ? "dir" : "text", path: `/home/user/${name}`, safe: !/^unsafe/.test(name) }));
   if (cmd.startsWith("analyze_open")) return 10; // a viewer with ten lines
+  if (cmd === "read_text_file") return { text: "hello\r\nworld", stamp: "1-1" };
+  if (cmd === "write_text_file") return "2-2";
   if (cmd === "system_info") return [["OS", "TestOS"], ["RAM", "16.0 GB"]];
   if (cmd === "analyze_groups") return globalThis.__groups ?? null;
   if (cmd === "analyze_lines") return Array.from({ length: args.count }, (_, i) => globalThis.__lines?.[args.from + i] ?? `line ${args.from + i}`);

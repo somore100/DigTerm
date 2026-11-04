@@ -93,6 +93,9 @@ export async function openAnalyze(block) {
       <button class="an-compact-btn" title="Shorter display text: fewer spaces, shortened long words and folders (view only)">Compact…</button>
       <label class="an-toggle" title="Replace IP addresses, emails, user names and secrets with labels when copying (the output itself is not changed)"><input type="checkbox" class="an-mask-on" /> Mask on copy</label>
       <button class="an-mask-edit" title="Choose what is masked">Mask…</button>
+      <label class="an-toggle an-edit-wrap" title="Edit this text file (small files only). Nothing is written until you press Save." hidden><input type="checkbox" class="an-edit" /> Edit</label>
+      <button class="an-save" hidden>Save</button>
+      <button class="an-discard" hidden>Discard</button>
       <button class="an-copy-sel">Copy selection</button>
       <button class="an-copy-all">Copy all</button>
       <button class="an-close">Close</button>
@@ -113,7 +116,7 @@ export async function openAnalyze(block) {
       <div class="cp-info"></div>
     </div>
     <div class="an-mask-panel" hidden></div>
-    <div class="an-main"><div class="an-body"><div class="an-spacer"></div><div class="an-rows"></div></div><aside class="an-patterns" hidden></aside></div>`;
+    <div class="an-main"><div class="an-body"><div class="an-spacer"></div><div class="an-rows"></div></div><textarea class="an-editor" spellcheck="false" hidden></textarea><aside class="an-patterns" hidden></aside></div>`;
   document.body.append(root);
 
   const settings = loadSettings();
@@ -705,6 +708,69 @@ export async function openAnalyze(block) {
     else if (tsel) copyText(e.target, tselText);
     else if (sel) copyText(e.target, () => textFor(sel[0], sel[1] + 1));
   };
+  // --- edit mode: small text files only, off by default; .log files stay read-only
+  const editWrap = root.querySelector(".an-edit-wrap");
+  const editBox = root.querySelector(".an-edit");
+  const editor = root.querySelector(".an-editor");
+  const saveBtn = root.querySelector(".an-save");
+  const discardBtn = root.querySelector(".an-discard");
+  let editStamp = "", eol = "\n", original = "", savedOnce = false;
+  const editing = () => !editor.hidden;
+  const dirty = () => editing() && editor.value !== original;
+  const unsavedNote = () => { matchesEl.textContent = "Unsaved changes: press Save or Discard first"; };
+  if (block.importPath && block.importText === undefined) {
+    editWrap.hidden = false;
+    if (/\.log(\.\d+)?$/i.test(block.importPath)) {
+      editBox.disabled = true;
+      editWrap.title = "Log files are read-only: a program is usually still writing to them";
+    }
+  }
+  function showEditing(on) {
+    body.hidden = on;
+    editor.hidden = !on;
+    saveBtn.hidden = !on;
+    discardBtn.hidden = !on;
+    if (on) editor.focus();
+  }
+  async function saveEdit() {
+    let text = editor.value;
+    if (eol === "\r\n") text = text.replace(/\n/g, "\r\n"); // keep Windows line endings
+    try {
+      editStamp = await invoke("write_text_file", { path: block.importPath, text, stamp: editStamp });
+      original = editor.value;
+      savedOnce = true;
+      matchesEl.textContent = "Saved";
+    } catch (err) {
+      alert(String(err));
+    }
+  }
+  editBox.addEventListener("change", async () => {
+    if (editBox.checked) {
+      try {
+        const f = await invoke("read_text_file", { path: block.importPath });
+        editStamp = f.stamp;
+        eol = f.text.includes("\r\n") ? "\r\n" : "\n";
+        editor.value = f.text;
+        original = editor.value; // the box may normalize line endings; compare against what it holds
+        showEditing(true);
+        matchesEl.textContent = "Editing: Ctrl+S saves";
+      } catch (err) {
+        alert(String(err));
+        editBox.checked = false;
+      }
+      return;
+    }
+    if (dirty()) { editBox.checked = true; unsavedNote(); return; }
+    showEditing(false);
+    matchesEl.textContent = "";
+    if (savedOnce) { close(); openAnalyze(block); } // show the saved text (the line index is rebuilt)
+  });
+  saveBtn.onclick = saveEdit;
+  discardBtn.onclick = () => { editor.value = original; matchesEl.textContent = "Changes discarded"; };
+  editor.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "s") { e.preventDefault(); saveEdit(); }
+  });
+
   // --- compact view
   const cpPanel = root.querySelector(".an-compact-panel");
   const cpInfo = root.querySelector(".cp-info");
@@ -841,7 +907,7 @@ export async function openAnalyze(block) {
       copyText(root.querySelector(".an-copy-sel"), tselText);
     }
     if (e.key === "F8") { e.preventDefault(); stepSeverity(e.shiftKey ? -1 : 1); }
-    if (e.key === "Escape") close();
+    if (e.key === "Escape") { if (dirty()) unsavedNote(); else close(); }
     if (e.ctrlKey && !e.shiftKey && (e.key === "=" || e.key === "+")) { e.preventDefault(); zoom(1); }
     if (e.ctrlKey && !e.shiftKey && e.key === "-") { e.preventDefault(); zoom(-1); }
     if (e.ctrlKey && !e.shiftKey && e.key === "0") { e.preventDefault(); zoom(0); }
@@ -851,7 +917,7 @@ export async function openAnalyze(block) {
     }
   };
   document.addEventListener("keydown", onKey);
-  root.querySelector(".an-close").onclick = close;
+  root.querySelector(".an-close").onclick = () => { if (dirty()) unsavedNote(); else close(); };
 
   // Dragging selected text would start the browser's drag-and-drop ghost; the viewer has no use for it.
   root.addEventListener("dragstart", (e) => e.preventDefault());

@@ -143,7 +143,8 @@ function openTarget(pane, info, action) {
   if (action === "viewer") return openAnalyze({ label: `File: ${basename(info.path)}`, importPath: info.path });
   if (action === "default") return void invoke("open_path", { path: info.path }).catch((e) => alert(String(e)));
   if (pane.id === null) return;
-  const cmd = action === "cd" ? `cd -- ${shellQuote(info.path)}` : `${IS_WIN ? "type" : "cat --"} ${shellQuote(info.path)}`;
+  // "catv" shows control characters as ^X instead of letting them change the terminal's state
+  const cmd = action === "cd" ? `cd -- ${shellQuote(info.path)}` : action === "catv" ? `cat -v -- ${shellQuote(info.path)}` : `${IS_WIN ? "type" : "cat --"} ${shellQuote(info.path)}`;
   invoke("pty_write", { id: pane.id, data: `\x15${IS_WIN ? cmd.replace("cd -- ", "cd ") : cmd}\r` }); // Ctrl+U clears what was typed
   pane.term.focus();
 }
@@ -350,10 +351,11 @@ class Pane {
       }
       if (info?.kind === "url") items.push(["Open in browser", () => openTarget(this, info, "browser")]);
       if (info?.kind === "dir") items.push(["Open folder here (cd)", () => openTarget(this, info, "cd")], ["Open in file manager", () => openTarget(this, info, "default")]);
-      if (info?.kind === "text") items.push(["Open in Digterm viewer", () => openTarget(this, info, "viewer")], ["Show in terminal (cat)", () => openTarget(this, info, "cat")], ["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
+      if (info?.kind === "text") items.push(["Open in Digterm viewer", () => openTarget(this, info, "viewer")], ...(info.safe ? [["Show in terminal (cat)", () => openTarget(this, info, "cat")]] : IS_WIN ? [] : [["Show in terminal safely (cat -v)", () => openTarget(this, info, "catv")]]), ["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
       if (info?.kind === "file") items.push(["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
       if (info?.kind) items.push([info.kind === "url" ? "Copy link" : "Copy path", () => navigator.clipboard.writeText(info.path).then(() => toast("Copied"))]);
       if (selected) items.push(["Copy", () => navigator.clipboard.writeText(maskCopy(selected)).then(copiedToast)]);
+      items.push(["Reset terminal display", () => this.term.reset()]); // clears a broken state, e.g. after cat of a binary file
       items.push(["Paste", () => navigator.clipboard.readText().then((t) => t && this.term.paste(t)).catch(() => {})]);
       showContextMenu(e.clientX, e.clientY, items);
     });

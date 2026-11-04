@@ -77,6 +77,9 @@ open any command's output in a viewer built for very large outputs.
   only warning and error lines (everything else collapses into `⋯ N lines hidden` rows). Uses the same word lists as the
   highlighting.
 - Zoom with Ctrl +/−/0 or Ctrl+wheel.
+- **Edit** (off by default): text files opened in the viewer (Ctrl+click, drop, `digterm file`) can be edited up to 5 MB
+  with an Edit checkbox, saved only when you press Save (or Ctrl+S). It refuses to save if the file changed on disk
+  meanwhile, keeps Windows line endings, and `.log` files stay read-only.
 - **Leave feedback…** (main menu): bug report, suggestion or question, with an optional list of your computer
   specifications that you can preview before anything leaves the app. **Send** posts the report over HTTPS to a small
   relay (`docs/feedback-relay.gs`, a Google Apps Script that forwards it to the support inbox); the relay address lives

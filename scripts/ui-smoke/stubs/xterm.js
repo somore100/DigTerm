@@ -1,7 +1,7 @@
 export class Terminal {
   constructor(o) { this.options = { ...o }; this.rows = 24; this.cols = 80; this.buffer = { active: { length: 0, getLine() { return null; } } }; this.parser = { registerOscHandler(id, fn) { (globalThis.__osc ??= {})[id] = fn; } }; }
   registerMarker() { return { line: 0, isDisposed: false }; }
-  loadAddon() {} open() {} onData() {} onResize() {} registerLinkProvider() {} write() {} dispose() {} focus() {} getSelection() { return globalThis.__selection ?? ""; }
+  loadAddon() {} open() {} onData() {} onResize() {} registerLinkProvider() {} write() {} dispose() {} reset() { globalThis.__reset = (globalThis.__reset ?? 0) + 1; } focus() {} getSelection() { return globalThis.__selection ?? ""; }
 }
 export class FitAddon { fit() {} }
 export class SearchAddon { findNext() {} findPrevious() {} }

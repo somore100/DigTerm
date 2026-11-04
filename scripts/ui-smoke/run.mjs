@@ -162,6 +162,43 @@ chord("KeyT", "T", { ctrlKey: true, shiftKey: true });
 await wait(30);
 check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens a tab");
 
+// edit mode for small text files: off by default, saved only on request, .log files read-only
+{
+  const drop = async (file) => { await globalThis.__events["tauri://drag-drop"]({ payload: { paths: [file] } }); await wait(30); };
+  const viewerEl = () => document.getElementById("analyze");
+  await drop("/tmp/dt-notes.txt");
+  let v = viewerEl();
+  const box = v?.querySelector(".an-edit");
+  check(v && !v.querySelector(".an-edit-wrap").hidden && !box.disabled, "a text file offers an Edit checkbox");
+  check(v?.querySelector(".an-editor").hidden && v.querySelector(".an-save").hidden, "editing is off until the box is ticked");
+  box.checked = true;
+  box.dispatchEvent(new w.Event("change", { bubbles: true }));
+  await wait(30);
+  const ed = v.querySelector(".an-editor");
+  check(!ed.hidden && ed.value === "hello\nworld", `ticking Edit shows the text in an editor: got ${JSON.stringify(ed.value)}`);
+  ed.value = "hello\nWORLD";
+  ed.dispatchEvent(new w.Event("input", { bubbles: true }));
+  box.checked = false;
+  box.dispatchEvent(new w.Event("change", { bubbles: true }));
+  await wait(20);
+  check(box.checked && !ed.hidden, "unticking with unsaved changes is refused");
+  check(!globalThis.__calls.some(([c]) => c === "write_text_file"), "nothing is written before Save");
+  v.querySelector(".an-save").click();
+  await wait(30);
+  const wr = globalThis.__calls.find(([c]) => c === "write_text_file");
+  check(wr && wr[1].text === "hello\r\nWORLD" && wr[1].stamp === "1-1" && wr[1].path === "/tmp/dt-notes.txt", `Save writes the text with its original line endings and stamp: got ${JSON.stringify(wr?.[1])}`);
+  const opens = globalThis.__calls.filter(([c]) => c === "analyze_open_file").length;
+  box.checked = false;
+  box.dispatchEvent(new w.Event("change", { bubbles: true }));
+  await wait(40);
+  check(globalThis.__calls.filter(([c]) => c === "analyze_open_file").length === opens + 1, "leaving edit mode after saving reopens the viewer on the new text");
+  viewerEl()?.querySelector(".an-close").click();
+  await drop("/tmp/server.log");
+  v = viewerEl();
+  check(v?.querySelector(".an-edit").disabled, "a .log file cannot be edited");
+  v?.querySelector(".an-close").click();
+}
+
 // folder of the command that printed a line: the newest marker at or above the line wins
 {
   const { cwdForLine } = await import(pathToFileURL(path.join(root, "src/folders.js")).href);
@@ -285,6 +322,25 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   eq("-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----", "<private key>", "private key block");
   eq("nothing secret here: 42 lines", "nothing secret here: 42 lines", "plain text untouched");
   check(maskText("10.1.2.3 bob@x.org", { on: true, ips: false, emails: true }) === "10.1.2.3 <email-1>", "mask: categories can be switched off");
+}
+
+// files with control characters are not printed with plain cat, which would corrupt the terminal
+{
+  const termEl = document.querySelector(".pane .pane-term");
+  const labels = async (name) => {
+    globalThis.__selection = name;
+    termEl.dispatchEvent(new w.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    await wait(40);
+    const l = [...document.querySelectorAll(".ctx-menu button")].map((b) => b.textContent);
+    document.querySelectorAll(".ctx-menu").forEach((m) => m.remove());
+    return l;
+  };
+  const plain = await labels("notes.txt");
+  check(plain.some((t) => t === "Show in terminal (cat)") && !plain.some((t) => /cat -v/.test(t)), "a plain text file is shown with cat");
+  const odd = await labels("unsafe.log");
+  check(odd.some((t) => /cat -v/.test(t)) && !odd.some((t) => t === "Show in terminal (cat)"), "a file with control characters is offered with cat -v instead of cat");
+  check(odd.includes("Reset terminal display"), "the terminal menu can reset a broken display");
+  globalThis.__selection = "";
 }
 
 // right-click menu on a selected folder name: its entries must be clickable and reach the backend

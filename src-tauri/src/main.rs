@@ -389,6 +389,9 @@ struct PathInfo {
     kind: &'static str,
     /// Absolute path when it exists.
     path: String,
+    /// A text file that is safe to print with `cat`: no escape, bell, shift-in/out or other control characters
+    /// that would leave the terminal in a broken state.
+    safe: bool,
 }
 
 /// True when the start of the file has no NUL bytes and is valid UTF-8 (a cut-off last character is fine).
@@ -405,12 +408,29 @@ fn looks_like_text(path: &Path) -> bool {
     }
 }
 
+/// True when none of the bytes would change a terminal's state if printed: only tab, newline and carriage return
+/// among the control characters, no DEL and no C1 controls (UTF-8 encoded U+0080..U+009F).
+fn terminal_safe_bytes(b: &[u8]) -> bool {
+    if b.iter().any(|&c| (c < 0x20 && !matches!(c, b'\t' | b'\n' | b'\r')) || c == 0x7f) {
+        return false;
+    }
+    !b.windows(2).any(|w| w[0] == 0xC2 && (0x80..=0x9F).contains(&w[1]))
+}
+
+/// Checks the first 256 KiB of a file with `terminal_safe_bytes`.
+fn is_terminal_safe(path: &Path) -> bool {
+    let Ok(mut f) = File::open(path) else { return false };
+    let mut buf = vec![0u8; 256 * 1024];
+    let n = f.read(&mut buf).unwrap_or(0);
+    terminal_safe_bytes(&buf[..n])
+}
+
 /// Looks up words from the terminal output: what each one is on disk. Relative names are looked up
 /// in `cwd`, `~` is the home folder.
 #[tauri::command]
 fn path_info(cwd: Option<String>, names: Vec<String>) -> Vec<PathInfo> {
     let home = home_dir();
-    let none = || PathInfo { kind: "", path: String::new() };
+    let none = || PathInfo { kind: "", path: String::new(), safe: false };
     names
         .iter()
         .take(256)
@@ -431,15 +451,21 @@ fn path_info(cwd: Option<String>, names: Vec<String>) -> Vec<PathInfo> {
                     None => return none(),
                 }
             };
+            let mut safe = false;
             let kind = if full.is_dir() {
                 "dir"
             } else if full.is_file() {
-                if looks_like_text(&full) { "text" } else { "file" }
+                if looks_like_text(&full) {
+                    safe = is_terminal_safe(&full);
+                    "text"
+                } else {
+                    "file"
+                }
             } else {
                 return none();
             };
             let full = fs::canonicalize(&full).unwrap_or(full);
-            PathInfo { kind, path: full.to_string_lossy().into_owned() }
+            PathInfo { kind, path: full.to_string_lossy().into_owned(), safe }
         })
         .collect()
 }
@@ -636,6 +662,65 @@ async fn system_info() -> Vec<(String, String)> {
         ("GPU".to_string(), unknown(gpu)),
         ("RAM".to_string(), unknown(ram)),
     ]
+}
+
+/// Largest file the viewer's Edit mode will load (the whole text goes into an editor box).
+const MAX_EDIT_BYTES: u64 = 5 * 1024 * 1024;
+
+#[derive(Serialize)]
+struct TextFile {
+    text: String,
+    /// Size and modification time when it was read; `write_text_file` refuses to save if they changed.
+    stamp: String,
+}
+
+fn file_stamp(meta: &fs::Metadata) -> String {
+    let nanos = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+    format!("{}-{}", meta.len(), nanos)
+}
+
+fn read_text_limited(path: &Path, max: u64) -> Result<TextFile, String> {
+    let meta = fs::metadata(path).map_err(|e| format!("Could not open the file: {e}"))?;
+    if !meta.is_file() {
+        return Err("This is not a regular file.".into());
+    }
+    if meta.len() > max {
+        return Err(format!("The file is larger than {} MB, too big to edit here.", max / 1024 / 1024));
+    }
+    let bytes = fs::read(path).map_err(|e| format!("Could not read the file: {e}"))?;
+    let text = String::from_utf8(bytes).map_err(|_| "The file is not valid UTF-8 text, so it cannot be edited here.".to_string())?;
+    Ok(TextFile { text, stamp: file_stamp(&meta) })
+}
+
+/// Saves through a temporary file in the same folder and a rename, so a crash never leaves half a file.
+/// Refuses when the file changed on disk since `stamp` was taken. Returns the new stamp.
+fn write_text_checked(path: &Path, text: &str, stamp: &str) -> Result<String, String> {
+    let meta = fs::metadata(path).map_err(|e| format!("Could not open the file: {e}"))?;
+    if file_stamp(&meta) != stamp {
+        return Err("The file changed on disk since you opened it, so nothing was saved. Copy your text, close the viewer and open the file again.".into());
+    }
+    let dir = path.parent().ok_or("The file has no folder.")?;
+    let tmp = dir.join(format!(".digterm-save-{}.tmp", std::process::id()));
+    let result = fs::write(&tmp, text)
+        .and_then(|_| fs::set_permissions(&tmp, meta.permissions()))
+        .and_then(|_| fs::rename(&tmp, path));
+    if let Err(e) = result {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Could not save the file: {e}"));
+    }
+    Ok(file_stamp(&fs::metadata(path).map_err(|e| e.to_string())?))
+}
+
+/// Reads a small text file for the viewer's Edit mode.
+#[tauri::command]
+async fn read_text_file(path: String) -> Result<TextFile, String> {
+    read_text_limited(Path::new(&path), MAX_EDIT_BYTES)
+}
+
+/// Writes the edited text back (only when the file is unchanged since it was read). Returns the new stamp.
+#[tauri::command]
+async fn write_text_file(path: String, text: String, stamp: String) -> Result<String, String> {
+    write_text_checked(Path::new(&path), &text, &stamp)
 }
 
 #[tauri::command]
@@ -1546,7 +1631,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
@@ -1820,6 +1905,32 @@ mod tests {
     }
 
     #[test]
+    fn text_files_can_be_read_and_saved_safely() {
+        let base = std::env::temp_dir().join(format!("digterm-test-edit-{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        let f = base.join("note.txt");
+        fs::write(&f, "one\ntwo\n").unwrap();
+        let read = read_text_limited(&f, 1024).unwrap();
+        assert_eq!(read.text, "one\ntwo\n");
+        // a normal save works and returns a stamp that allows the next save
+        let stamp = write_text_checked(&f, "one\nTWO\n", &read.stamp).unwrap();
+        assert_eq!(fs::read_to_string(&f).unwrap(), "one\nTWO\n");
+        assert!(write_text_checked(&f, "again\n", &stamp).is_ok());
+        // an old stamp (the file changed since it was read) is refused and nothing is written
+        fs::write(&f, "changed elsewhere, longer\n").unwrap();
+        assert!(write_text_checked(&f, "mine\n", &stamp).is_err());
+        assert_eq!(fs::read_to_string(&f).unwrap(), "changed elsewhere, longer\n");
+        // too large, not text, missing
+        assert!(read_text_limited(&f, 3).is_err());
+        fs::write(&f, [0xffu8, 0xfe, 0x00]).unwrap();
+        assert!(read_text_limited(&f, 1024).is_err());
+        assert!(read_text_limited(&base.join("missing.txt"), 1024).is_err());
+        let left: Vec<_> = fs::read_dir(&base).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert_eq!(left, vec!["note.txt".to_string()], "no temporary file is left behind");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn has_word_matches_whole_words_only() {
         assert!(has_word("build failed: x", "failed"));
         assert!(has_word("error", "error"));
@@ -1848,6 +1959,17 @@ mod tests {
     }
 
     #[test]
+    fn terminal_safe_bytes_rejects_control_characters() {
+        assert!(terminal_safe_bytes("plain text\twith a tab\r\nand wörds\n".as_bytes()));
+        assert!(!terminal_safe_bytes(b"colored \x1b[31mred\x1b[0m"), "escape sequences");
+        assert!(!terminal_safe_bytes(b"ring\x07"), "bell");
+        assert!(!terminal_safe_bytes(b"shift\x0eout"), "shift-out switches the character set");
+        assert!(!terminal_safe_bytes(b"del\x7f"));
+        assert!(!terminal_safe_bytes("c1 control \u{9b}".as_bytes()), "C1 controls such as CSI");
+        assert!(terminal_safe_bytes("ü \u{a0} é".as_bytes()), "other non-ASCII text is fine");
+    }
+
+    #[test]
     fn path_info_classifies_names() {
         let base = std::env::temp_dir().join(format!("digterm-test-paths-{}", std::process::id()));
         fs::create_dir_all(base.join("sub")).unwrap();
@@ -1857,6 +1979,9 @@ mod tests {
         let names: Vec<String> = ["sub", "a.log", "p.bin", "nope"].iter().map(|s| s.to_string()).collect();
         let kinds: Vec<&str> = path_info(cwd.clone(), names).iter().map(|i| i.kind).collect();
         assert_eq!(kinds, vec!["dir", "text", "file", ""]);
+        fs::write(base.join("color.log"), "ok \x1b[31mred\x1b[0m\n").unwrap();
+        let info = path_info(cwd.clone(), vec!["a.log".into(), "color.log".into()]);
+        assert!(info[0].safe && !info[1].safe && info[1].kind == "text", "a text file with escape codes is text but not safe to cat");
         assert!(path_info(None, vec!["relative".into()])[0].kind.is_empty());
         let _ = fs::remove_dir_all(&base);
     }
