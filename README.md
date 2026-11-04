@@ -77,6 +77,9 @@ open any command's output in a viewer built for very large outputs.
   only warning and error lines (everything else collapses into `⋯ N lines hidden` rows). Uses the same word lists as the
   highlighting.
 - Zoom with Ctrl +/−/0 or Ctrl+wheel.
+- **Follow** a running command: its row in the Commands list has a Follow button that opens the output so far in the
+  viewer and keeps it growing (with a Follow box that scrolls to the newest line). At the end the view is set to the
+  command's exact output and folding becomes available.
 - **Hide** (right-click a selection in the terminal or the viewer): draws the selected text as black blocks, for screen
   sharing and screenshots. Show it again from the right-click menu (in the viewer also the Show hidden button). View
   only: the saved output is unchanged and copying from the terminal or viewer gives `█` for hidden text, but the
@@ -172,7 +175,7 @@ Roughly in the order I plan to do them. Nothing here is promised, and the order 
 - Command text, duration and numbering in the Commands list; history of earlier sessions and cleanup of old saved
   output; jumping between errors and a severity filter; Ctrl+click and right-click on folders, files and links;
   whole-run analysis and copy; masking on copy; `digterm file` / `cmd | digterm -`; multi-line block folding; compact
-  view with best compression; running commands and each command's folder; Leave feedback; Rust unit tests in CI.
+  view with best compression; running commands (with live Follow) and each command's folder; Leave feedback; Rust unit tests in CI.
 
 **Next**
 - Export or copy a viewer selection with sensitive details (usernames, IP addresses, paths) masked.
@@ -180,7 +183,6 @@ Roughly in the order I plan to do them. Nothing here is promised, and the order 
 
 **Then**
 - Ctrl+click on `file:line` in the output to open it at that line.
-- Follow a running command's output live in the viewer.
 - Diagnostic command presets (read-only, documented, human-editable), with a clear explanation before anything needs elevated privileges.
 - Comparing two runs of the same command, ignoring timestamps and process ids.
 - New Window.

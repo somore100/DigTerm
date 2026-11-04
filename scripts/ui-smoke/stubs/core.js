@@ -10,6 +10,8 @@ export async function invoke(cmd, args) {
   if (cmd === "read_text_file") return { text: "hello\r\nworld", stamp: "1-1" };
   if (cmd === "write_text_file") return "2-2";
   if (cmd === "system_info") return [["OS", "TestOS"], ["RAM", "16.0 GB"]];
+  if (cmd === "session_len") return globalThis.__sessionLen ?? null;
+  if (cmd === "analyze_extend") return globalThis.__extendTo ?? 10;
   if (cmd === "analyze_groups") return globalThis.__groups ?? null;
   if (cmd === "analyze_lines") return Array.from({ length: args.count }, (_, i) => globalThis.__lines?.[args.from + i] ?? `line ${args.from + i}`);
   return null;

@@ -923,6 +923,54 @@ async fn analyze_open(state: State<'_, AppState>, session: u32, start: u64, end:
     set_analysis(&state, path, start, end)
 }
 
+/// The same single-range view with its end moved to `end` (the command's output has grown, or the final end is
+/// now known and is a little earlier than the last poll). Only the new bytes are read.
+fn extend_analysis(old: &Analysis, end: u64) -> Result<Analysis, String> {
+    if old.ends.is_some() {
+        return Err("This view cannot follow live output.".into());
+    }
+    let mut starts = old.starts.clone();
+    if end < old.end {
+        starts.retain(|&s| s < end);
+    } else if end > old.end {
+        let mut f = File::open(&old.path).map_err(|e| e.to_string())?;
+        // the byte before the old end tells whether the last line was complete; if not, the new bytes continue it
+        let prev_newline = if old.starts.is_empty() {
+            true
+        } else {
+            f.seek(SeekFrom::Start(old.end - 1)).map_err(|e| e.to_string())?;
+            let mut one = [0u8; 1];
+            f.read_exact(&mut one).map_err(|e| e.to_string())?;
+            one[0] == b'\n'
+        };
+        f.seek(SeekFrom::Start(old.end)).map_err(|e| e.to_string())?;
+        let mut buf = vec![0u8; (end - old.end) as usize];
+        f.read_exact(&mut buf).map_err(|e| e.to_string())?;
+        if !buf.is_empty() && prev_newline {
+            starts.push(old.end);
+        }
+        for (i, &b) in buf.iter().enumerate() {
+            if b == b'\n' && i + 1 < buf.len() {
+                starts.push(old.end + i as u64 + 1);
+            }
+        }
+    }
+    Ok(Analysis { path: old.path.clone(), starts, end, ends: None })
+}
+
+/// Moves the end of the open single-range view (see `extend_analysis`) and returns the new line count.
+#[tauri::command]
+async fn analyze_extend(state: State<'_, AppState>, end: u64) -> Result<u64, String> {
+    let old = current_analysis(&state)?;
+    if end == old.end {
+        return Ok(old.starts.len() as u64);
+    }
+    let next = extend_analysis(&old, end)?;
+    let n = next.starts.len() as u64;
+    *state.analysis.lock().unwrap() = Some(Arc::new(next));
+    Ok(n)
+}
+
 /// Opens several output ranges of a session's run file as one view, leaving out what lies between
 /// them (prompts and typed commands).
 #[tauri::command]
@@ -1631,7 +1679,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
@@ -1928,6 +1976,34 @@ mod tests {
         let left: Vec<_> = fs::read_dir(&base).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
         assert_eq!(left, vec!["note.txt".to_string()], "no temporary file is left behind");
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn extend_analysis_follows_a_growing_file() {
+        let path = std::env::temp_dir().join(format!("digterm-test-follow-{}.txt", std::process::id()));
+        fs::write(&path, "a\nb").unwrap(); // the last line is not finished yet
+        let first = Analysis { path: path.clone(), starts: index_file(&path, 0, 3).unwrap(), end: 3, ends: None };
+        assert_eq!(first.read(0, 9).unwrap(), vec!["a", "b"]);
+        fs::write(&path, "a\nbc\nd\n").unwrap();
+        let grown = extend_analysis(&first, 7).unwrap();
+        assert_eq!(grown.read(0, 9).unwrap(), vec!["a", "bc", "d"], "the unfinished line continues, new lines are added");
+        let whole = index_file(&path, 0, 7).unwrap();
+        assert_eq!(grown.starts, whole, "extending gives the same index as indexing everything at once");
+        // a complete last line: new bytes start a new line
+        fs::write(&path, "a\nbc\nd\ne").unwrap();
+        let more = extend_analysis(&grown, 8).unwrap();
+        assert_eq!(more.read(0, 9).unwrap(), vec!["a", "bc", "d", "e"]);
+        // the final end can be earlier than the last poll (trailing prompt bytes are cut off again)
+        let cut = extend_analysis(&more, 7).unwrap();
+        assert_eq!(cut.read(0, 9).unwrap(), vec!["a", "bc", "d"]);
+        assert_eq!(cut.starts, index_file(&path, 0, 7).unwrap());
+        // nothing in the file yet, then some output
+        let empty = Analysis { path: path.clone(), starts: Vec::new(), end: 0, ends: None };
+        assert_eq!(extend_analysis(&empty, 3).unwrap().read(0, 9).unwrap(), vec!["a", "b"]);
+        // views made of several ranges cannot follow
+        let gapped = Analysis { path: path.clone(), starts: vec![0], end: 2, ends: Some(vec![2]) };
+        assert!(extend_analysis(&gapped, 5).is_err());
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

@@ -7,7 +7,7 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion, getName } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { openAnalyze } from "./analyze.js";
+import { openAnalyze, finishFollow } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
 import { toast, copiedToast } from "./toast.js";
 import { showContextMenu } from "./ctxmenu.js";
@@ -31,6 +31,8 @@ const PREF_DEFAULTS = {
   copyMode: "output", // output | command
   splitByEntry: true, // Analyze opens one command (true) or the whole run (false)
   folderLinks: true, // Ctrl+click a folder name in the output to cd into it
+  alwaysOnTop: false, // keep the window above other windows
+  copyStyle: "terminal", // terminal: Ctrl+Shift+C/V only (Ctrl+C interrupts) | windows: Ctrl+C copies when text is selected, Ctrl+V pastes
   newestBottom: true, // Commands list: first command on top, newest at the bottom (list follows the bottom)
   cleanupDays: 0, // delete saved output older than this many days on start; 0 = never
   keys: {}, // action id -> combo overrides
@@ -209,6 +211,16 @@ class Pane {
     this.registerCommandMarks();
     this.registerFolderLinks();
 
+    // "windows" style: Ctrl+C copies when text is selected (otherwise it interrupts), Ctrl+V pastes
+    this.term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown" || prefs.copyStyle !== "windows" || !e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return true;
+      if (e.code === "KeyV") return false; // xterm ignores it; the browser's paste event then pastes
+      const text = e.code === "KeyC" ? this.selectedText() : "";
+      if (!text) return true;
+      navigator.clipboard.writeText(maskCopy(text)).then(copiedToast);
+      this.term.clearSelection();
+      return false;
+    });
     this.term.onData((data) => { if (this.id !== null) invoke("pty_write", { id: this.id, data }); });
     // debounced: the shell redraws its prompt on every size change, so only send the settled size
     this.term.onResize(({ rows, cols }) => {
@@ -483,7 +495,12 @@ class Pane {
     tick();
     const info = Object.assign(document.createElement("span"), { className: "block-info" });
     info.append(head, label);
-    li.append(info);
+    const follow = Object.assign(document.createElement("button"), { textContent: "Follow", className: "analyze-btn", title: "Open the output so far in the viewer and keep it up to date" });
+    follow.onclick = async () => {
+      const end = await invoke("session_len", { id: b.session });
+      openAnalyze({ session: b.session, id: b.id, label: `Running: ${cmdText.textContent || "command"}`, start: b.start, end, follow: { id: b.id } });
+    };
+    li.append(info, follow);
     this.blocksEl.append(li);
     this.running = { li, id: b.id, timer: setInterval(tick, 500), reveal: setTimeout(() => { li.hidden = false; }, 400) };
     if (prefs.newestBottom) scrollBlocksToEnd();
@@ -498,6 +515,7 @@ class Pane {
   }
 
   addBlock(b) {
+    finishFollow(b); // a viewer following this command stops at the final end
     this.clearRunning();
     this.doneId = Math.max(this.doneId, b.id);
     this.blocks.push(b);
@@ -949,6 +967,12 @@ function setDefaultFont(px) {
   refreshZoomLabels();
 }
 
+function setAlwaysOnTop(on) {
+  prefs.alwaysOnTop = on;
+  savePrefs();
+  getCurrentWindow().setAlwaysOnTop(on).catch(() => {});
+}
+
 async function toggleFullscreen() {
   const w = getCurrentWindow();
   await w.setFullscreen(!(await w.isFullscreen()));
@@ -1175,12 +1199,20 @@ function showPreferences() {
     const cleanRow = document.createElement("span");
     cleanRow.append(clean, " ", usage);
 
+    const onTop = document.createElement("input");
+    onTop.type = "checkbox"; onTop.checked = prefs.alwaysOnTop;
+    onTop.onchange = () => setAlwaysOnTop(onTop.checked);
+
+    const copyStyle = document.createElement("select");
+    for (const [v, l] of [["terminal", "Terminal: Ctrl+Shift+C / Ctrl+Shift+V (Ctrl+C always interrupts)"], ["windows", "Windows: Ctrl+C copies when text is selected, Ctrl+V pastes"]]) copyStyle.add(new Option(l, v, false, prefs.copyStyle === v));
+    copyStyle.onchange = () => { prefs.copyStyle = copyStyle.value; savePrefs(); };
+
     body.append(
-      heading("Appearance"), opt("Theme", theme), opt("Font size", font),
+      heading("Appearance"), opt("Theme", theme), opt("Font size", font), opt("Keep window on top of others", onTop),
       opt("Smaller text when a tab has more terminals", auto),
       heading("Tabs"), opt("Tab title", titleStyle),
       heading("Startup"), opt("Restore directories on start", restore),
-      heading("Terminal"), opt("Scrollback lines (full output is always saved to disk)", scroll),
+      heading("Terminal"), opt("Copy and paste keys", copyStyle), opt("Scrollback lines (full output is always saved to disk)", scroll),
       opt("Ctrl+click a folder or file name in the output to open it", links),
       heading("Privacy"), opt("Mask IPs, emails, user names and secrets when copying (details in the viewer)", mask),
       heading("Commands list"), opt("Order", order),
@@ -1415,6 +1447,7 @@ function renderMenu() {
   item("History of earlier sessions…", null, showHistory);
   sep();
   item("Fullscreen", "fullscreen", toggleFullscreen);
+  item((prefs.alwaysOnTop ? "✓ " : "") + "Always on top", null, () => setAlwaysOnTop(!prefs.alwaysOnTop));
   sep();
   item("Preferences", "prefs", showPreferences);
   item("Keyboard shortcuts", "shortcuts", showShortcuts);
@@ -1477,6 +1510,7 @@ await listen("pty-exit", (e) => {
 // ---------------------------------------------------------------- start
 
 applyCommandOrder();
+if (prefs.alwaysOnTop) getCurrentWindow().setAlwaysOnTop(true).catch(() => {});
 if (prefs.cleanupDays > 0) invoke("cleanup_runs", { days: prefs.cleanupDays }).catch(() => {});
 
 new ResizeObserver(() => tabs.forEach(layoutTab)).observe($("stage"));

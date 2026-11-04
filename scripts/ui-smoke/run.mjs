@@ -162,6 +162,37 @@ chord("KeyT", "T", { ctrlKey: true, shiftKey: true });
 await wait(30);
 check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens a tab");
 
+// following a running command: the viewer grows with the output and stops at the command's final end
+{
+  const sid = globalThis.__calls.filter(([c]) => c === "pty_spawn").length;
+  globalThis.__sessionLen = 1000;
+  globalThis.__extendTo = 10;
+  await globalThis.__events["pty-block-start"]({ payload: { session: sid, id: 40, cmd_start: 2000, start: 2010 } });
+  const btn = [...document.querySelectorAll(".block-list li.running button")].pop();
+  check(btn && /Follow/.test(btn.textContent), "a running command has a Follow button");
+  btn?.click();
+  await wait(40);
+  const v = document.getElementById("analyze");
+  check(v && !v.querySelector(".an-follow-wrap").hidden && v.querySelector(".an-mode").disabled, "following shows the Follow box and pauses folding");
+  const open = globalThis.__calls.find(([c, a]) => c === "analyze_open" && a.start === 2010);
+  check(open && open[1].end === 1000 && open[1].session === sid, "the viewer opens on the output so far");
+  globalThis.__extendTo = 25;
+  await wait(900); // one poll
+  check(/25 lines/.test(v.querySelector(".an-count").textContent), `the viewer grows while the command runs: got ${v.querySelector(".an-count").textContent}`);
+  check(globalThis.__calls.some(([c, a]) => c === "analyze_extend" && a.end === 1000), "each poll extends to the current length of the run file");
+  globalThis.__extendTo = 30;
+  await globalThis.__events["pty-block"]({ payload: { session: sid, id: 40, cmd_start: 2000, start: 2010, end: 1040, lines: 30, exit: 3, ms: 900 } });
+  await wait(120);
+  check(globalThis.__calls.some(([c, a]) => c === "analyze_extend" && a.end === 1040), "when the command ends the view is set to its exact final end");
+  check(/finished · exit 3/.test(v.querySelector(".an-matches").textContent) && !v.querySelector(".an-mode").disabled && v.querySelector(".an-follow-wrap").hidden, "the viewer says it finished and folding comes back");
+  const calls = globalThis.__calls.filter(([c]) => c === "analyze_extend").length;
+  await wait(900);
+  check(globalThis.__calls.filter(([c]) => c === "analyze_extend").length === calls, "polling stops after the command finished");
+  v.querySelector(".an-close").click();
+  globalThis.__sessionLen = undefined;
+  globalThis.__extendTo = undefined;
+}
+
 // edit mode for small text files: off by default, saved only on request, .log files read-only
 {
   const drop = async (file) => { await globalThis.__events["tauri://drag-drop"]({ payload: { paths: [file] } }); await wait(30); };
@@ -440,6 +471,19 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
     check(globalThis.__calls.some(([c, a]) => c === "pty_write" && a.data.includes("cd -- '/home/user/docs'")), "choosing cd types the cd command into the shell");
   }
   globalThis.__selection = "";
+}
+
+// copy style and always on top
+{
+  const key = (code, o = {}) => ({ type: "keydown", code, ctrlKey: true, shiftKey: false, altKey: false, metaKey: false, ...o });
+  const h = globalThis.__keyHandler;
+  globalThis.__selection = "hello";
+  check(h(key("KeyC")) === true, "terminal style: Ctrl+C is left for the shell (interrupt)");
+  const prefsBox = JSON.parse(w.localStorage.getItem("digterm.prefs") || "{}");
+  check(prefsBox.copyStyle === undefined || prefsBox.copyStyle === "terminal", "copy style defaults to terminal");
+  const mod = [...w.document.querySelectorAll("select")];
+  check(typeof h === "function", "terminal registers a key handler");
+  w.localStorage.setItem("digterm.prefs", JSON.stringify({ ...prefsBox, copyStyle: "windows" }));
 }
 
 if (problems.length) {

@@ -4,7 +4,7 @@ export class Terminal {
   registerDecoration(o) { const d = { o, disposed: false, dispose() { d.disposed = true; } }; (globalThis.__decos ??= []).push(d); return d; }
   getSelectionPosition() { return globalThis.__selPos; }
   clearSelection() { globalThis.__selection = ""; }
-  loadAddon() {} open() {} onData() {} onResize() {} registerLinkProvider() {} write() {} dispose() {} reset() { globalThis.__reset = (globalThis.__reset ?? 0) + 1; } focus() {} getSelection() { return globalThis.__selection ?? ""; }
+  attachCustomKeyEventHandler(fn) { globalThis.__keyHandler = fn; } loadAddon() {} open() {} onData() {} onResize() {} registerLinkProvider() {} write() {} dispose() {} reset() { globalThis.__reset = (globalThis.__reset ?? 0) + 1; } focus() {} getSelection() { return globalThis.__selection ?? ""; }
 }
 export class FitAddon { fit() {} }
 export class SearchAddon { findNext() {} findPrevious() {} }

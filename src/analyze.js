@@ -47,6 +47,12 @@ function buildHighlighter(s) {
   return (escaped) => escaped.replace(re, (m) => `<mark class="w-${map.get(m.toLowerCase())}">${m}</mark>`);
 }
 
+// Viewers that follow a running command, by "session:command id": called with the finished block.
+const followers = new Map();
+export function finishFollow(b) {
+  followers.get(`${b.session}:${b.id}`)?.(b);
+}
+
 export async function openAnalyze(block) {
   let total;
   // whole-run view: optionally only the output of each command, without prompts and typed commands
@@ -93,6 +99,7 @@ export async function openAnalyze(block) {
       <button class="an-compact-btn" title="Shorter display text: fewer spaces, shortened long words and folders (view only)">Compact…</button>
       <label class="an-toggle" title="Replace IP addresses, emails, user names and secrets with labels when copying (the output itself is not changed)"><input type="checkbox" class="an-mask-on" /> Mask on copy</label>
       <button class="an-mask-edit" title="Choose what is masked">Mask…</button>
+      <label class="an-toggle an-follow-wrap" title="Keep scrolling to the newest output while the command runs" hidden><input type="checkbox" class="an-follow" checked /> Follow</label>
       <label class="an-toggle an-edit-wrap" title="Edit this text file (small files only). Nothing is written until you press Save." hidden><input type="checkbox" class="an-edit" /> Edit</label>
       <button class="an-save" hidden>Save</button>
       <button class="an-discard" hidden>Discard</button>
@@ -741,6 +748,49 @@ export async function openAnalyze(block) {
     else if (tsel) copyText(e.target, tselText);
     else if (sel) copyText(e.target, () => textFor(sel[0], sel[1] + 1));
   };
+  // --- live follow: a running command's output grows; the line index is extended as the run file grows
+  let stopFollow = () => {};
+  if (block.follow) {
+    const key = `${block.session}:${block.follow.id}`;
+    const followBox = root.querySelector(".an-follow");
+    root.querySelector(".an-follow-wrap").hidden = false;
+    modeEl.disabled = true; // folding is computed for a fixed number of lines: available once the command has finished
+    modeEl.title = "Folding is available when the command has finished";
+    matchesEl.textContent = "running…";
+    let busy = false;
+    async function grow(n) {
+      if (n === total) return;
+      const atEnd = body.scrollTop + body.clientHeight >= body.scrollHeight - 2 * ROW;
+      cache.delete(total - 1); // the last line may have been unfinished
+      cache.delete(total - 2);
+      total = n;
+      sev = null;
+      lens = wrapEff() ? new Uint32Array(await invoke("analyze_lengths")) : null;
+      rebuild();
+      if (followBox.checked && atEnd) body.scrollTop = body.scrollHeight;
+      render();
+    }
+    async function poll(finalEnd) {
+      if (busy || !root.isConnected) return;
+      busy = true;
+      try {
+        const end = finalEnd ?? (await invoke("session_len", { id: block.session }));
+        await grow(await invoke("analyze_extend", { end }));
+      } catch { /* the next poll tries again */ } finally { busy = false; }
+    }
+    const timer = setInterval(() => poll(), 700);
+    stopFollow = () => { clearInterval(timer); followers.delete(key); };
+    followers.set(key, async (b) => {
+      stopFollow();
+      while (busy) await new Promise((r) => setTimeout(r, 40));
+      await poll(b.end);
+      root.querySelector(".an-follow-wrap").hidden = true;
+      modeEl.disabled = false;
+      modeEl.title = "Fold repeated lines (view only)";
+      matchesEl.textContent = `finished · exit ${b.exit ?? "?"}`;
+    });
+  }
+
   // --- edit mode: small text files only, off by default; .log files stay read-only
   const editWrap = root.querySelector(".an-edit-wrap");
   const editBox = root.querySelector(".an-edit");
@@ -997,7 +1047,7 @@ export async function openAnalyze(block) {
     zoom(e.deltaY < 0 ? 1 : -1);
   }, { passive: false });
 
-  const close = () => { resizeObs.disconnect(); root.remove(); document.removeEventListener("keydown", onKey); };
+  const close = () => { stopFollow(); resizeObs.disconnect(); root.remove(); document.removeEventListener("keydown", onKey); };
   const NAV = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
   const onKey = (e) => {
     const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
