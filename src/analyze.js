@@ -96,6 +96,7 @@ export async function openAnalyze(block) {
       <label class="an-toggle an-edit-wrap" title="Edit this text file (small files only). Nothing is written until you press Save." hidden><input type="checkbox" class="an-edit" /> Edit</label>
       <button class="an-save" hidden>Save</button>
       <button class="an-discard" hidden>Discard</button>
+      <button class="an-unhide-all" title="Show all hidden text again" hidden>Show hidden</button>
       <button class="an-copy-sel">Copy selection</button>
       <button class="an-copy-all">Copy all</button>
       <button class="an-close">Close</button>
@@ -199,6 +200,37 @@ export async function openAnalyze(block) {
   let sampleLines = null;
   const compactOn = () => cp.spaces || cp.tokens || cp.paths;
   const cz = (t) => (compactOn() ? compactLine(t, cp, aliases) : t);
+  // --- hidden text: black blocks over chosen parts of lines (right-click > Hide). View only: the saved output is
+  // untouched. Hidden characters become U+E000 in the displayed text (same length, so columns and wrapping stay valid);
+  // they are drawn as black blocks and copy as "█".
+  const HIDE = "\uE000";
+  const hidden = new Map(); // original line -> sorted, merged [from, to) column ranges; to may be Infinity
+  const hiddenCount = () => [...hidden.values()].reduce((n, rs) => n + rs.length, 0);
+  const fullyHidden = (line) => !!hidden.get(line)?.some(([a, b]) => a <= 0 && b === Infinity);
+  function maskLine(line, t) {
+    const rs = hidden.get(line);
+    if (!rs) return t;
+    if (compactOn()) return HIDE.repeat(t.length); // compact view moves columns: hide the whole line to be safe
+    let out = "", pos = 0;
+    for (const [a, b] of rs) {
+      const from = Math.max(pos, Math.min(a, t.length)), to = Math.min(b, t.length);
+      if (to <= from) continue;
+      out += t.slice(pos, from) + HIDE.repeat(to - from);
+      pos = to;
+    }
+    return out + t.slice(pos);
+  }
+  const maskSummary = (line, text) => (fullyHidden(line) ? HIDE.repeat(Math.min(text.length, 60)) : text);
+  function addHidden(line, from, to) {
+    const rs = [...(hidden.get(line) ?? []), [from, to]].sort((x, y) => x[0] - y[0]);
+    const merged = [];
+    for (const r of rs) {
+      const last = merged[merged.length - 1];
+      if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+      else merged.push([r[0], r[1]]);
+    }
+    hidden.set(line, merged);
+  }
   let lens = null; // UTF-16 length of every original line, loaded after the viewer opens
   let wrapOn = settings.wrap;
   const wrapEff = () => wrapOn && !compactOn(); // compact text no longer matches the line lengths wrapping is planned with
@@ -324,7 +356,7 @@ export async function openAnalyze(block) {
 
   async function fetchLines(from, to) {
     const lines = await invoke("analyze_lines", { from, count: to - from });
-    lines.forEach((t, i) => cache.set(from + i, cz(t)));
+    lines.forEach((t, i) => cache.set(from + i, maskLine(from + i, cz(t))));
   }
 
   async function render() {
@@ -350,7 +382,7 @@ export async function openAnalyze(block) {
     const cur = matchIdx >= 0 ? matches[matchIdx] : -1;
     let html = "";
     for (const r of infos) {
-      const t = r.summary ?? cache.get(r.line) ?? "";
+      const t = r.summary ? maskSummary(r.line, r.summary) : cache.get(r.line) ?? "";
       const end = r.line + r.count - 1;
       let cls = "row";
       if (matches.length && hasMatchIn(r.line, end)) cls += cur >= r.line && cur <= end ? " cur" : " hit";
@@ -371,7 +403,8 @@ export async function openAnalyze(block) {
   }
 
   function segHtml(s) {
-    return highlight ? highlight(esc(s)) : esc(s);
+    const h = highlight ? highlight(esc(s)) : esc(s);
+    return h.replace(/\uE000+/g, (m) => `<span class="hid">${"█".repeat(m.length)}</span>`);
   }
 
   // Row text with the caret and any text selection drawn in; falls back to plain highlighted text.
@@ -416,14 +449,14 @@ export async function openAnalyze(block) {
 
   async function textOfView(v) {
     const r = rowAt(v);
-    if (r.summary) return r.summary;
+    if (r.summary) return maskSummary(r.line, r.summary);
     if (!cache.has(r.line)) await fetchLines(r.line, r.line + 1);
     return cache.get(r.line) ?? "";
   }
 
   const textSync = (v) => {
     const r = rowAt(v);
-    return r.summary ?? cache.get(r.line) ?? "";
+    return r.summary ? maskSummary(r.line, r.summary) : cache.get(r.line) ?? "";
   };
   const cmpPos = (p, q) => p.v - q.v || p.col - q.col;
 
@@ -508,7 +541,7 @@ export async function openAnalyze(block) {
   async function textFor(from, to) {
     const parts = [];
     for (let i = from; i < to; i += 20000) {
-      parts.push(...(await invoke("analyze_lines", { from: i, count: Math.min(20000, to - i) })).map(cz));
+      parts.push(...(await invoke("analyze_lines", { from: i, count: Math.min(20000, to - i) })).map((t, k) => maskLine(i + k, cz(t))));
     }
     return parts.join("\n");
   }
@@ -518,7 +551,7 @@ export async function openAnalyze(block) {
     let cursor = 0;
     for (const g of eff) {
       if (g.first > cursor) parts.push(await textFor(cursor, g.first));
-      const line = g.summary ?? cz((await invoke("analyze_lines", { from: g.first, count: 1 }))[0]);
+      const line = g.summary !== undefined && g.summary !== null ? maskSummary(g.first, g.summary) : maskLine(g.first, cz((await invoke("analyze_lines", { from: g.first, count: 1 }))[0]));
       parts.push(`${line}  ×${g.count}`);
       cursor = g.first + g.count;
     }
@@ -527,7 +560,7 @@ export async function openAnalyze(block) {
   }
 
   async function copyText(button, getText) {
-    await navigator.clipboard.writeText(maskCopy(await getText()));
+    await navigator.clipboard.writeText(maskCopy((await getText()).replace(/\uE000/g, "█")));
     copiedToast();
     const old = button.textContent;
     button.textContent = loadMask().on ? "Copied (masked)" : "Copied";
@@ -844,11 +877,80 @@ export async function openAnalyze(block) {
   }
   root.querySelector(".cp-best").onclick = bestCompression;
 
+  // The parts of lines the current selection covers, as {line, from, to} in original line columns.
+  function nativeSpans() {
+    const s = window.getSelection();
+    if (!s || s.isCollapsed || !s.rangeCount) return [];
+    const range = s.getRangeAt(0);
+    if (!body.contains(range.commonAncestorContainer)) return [];
+    const out = [];
+    for (const row of rows.querySelectorAll(".row")) {
+      if (!range.intersectsNode(row)) continue;
+      const line = Number(row.dataset.line);
+      if (Number(row.dataset.count) > 1) { out.push({ line, from: 0, to: Infinity }); continue; }
+      for (const tx of row.querySelectorAll(".tx")) {
+        if (!range.intersectsNode(tx)) continue;
+        const r = document.createRange();
+        r.selectNodeContents(tx);
+        if (range.compareBoundaryPoints(Range.START_TO_START, r) > 0) r.setStart(range.startContainer, range.startOffset);
+        if (range.compareBoundaryPoints(Range.END_TO_END, r) < 0) r.setEnd(range.endContainer, range.endOffset);
+        const pre = document.createRange();
+        pre.setStart(tx, 0);
+        pre.setEnd(r.startContainer, r.startOffset);
+        const sub = Number(tx.closest(".sl")?.dataset.sub || 0);
+        const from = (sub ? sub * wrapW : 0) + pre.toString().length;
+        const to = from + r.toString().length;
+        if (to > from) out.push({ line, from, to });
+      }
+    }
+    return out;
+  }
+  function selectionSpans() {
+    const native = nativeSpans();
+    if (native.length) return native;
+    if (tsel) {
+      const out = [];
+      for (let v = tsel.a.v; v <= tsel.b.v; v++) {
+        const r = rowAt(v);
+        out.push(r.count > 1 ? { line: r.line, from: 0, to: Infinity } : { line: r.line, from: v === tsel.a.v ? tsel.a.col : 0, to: v === tsel.b.v ? tsel.b.col : Infinity });
+      }
+      return out;
+    }
+    if (sel && sel[1] - sel[0] < 20000) {
+      const out = [];
+      for (let l = sel[0]; l <= sel[1]; l++) out.push({ line: l, from: 0, to: Infinity });
+      return out;
+    }
+    return [];
+  }
+  function refreshHidden() {
+    cache.clear();
+    sel = null;
+    tsel = null;
+    tpos = null;
+    window.getSelection()?.removeAllRanges();
+    root.querySelector(".an-unhide-all").hidden = hiddenCount() === 0;
+    render();
+  }
+  root.querySelector(".an-unhide-all").onclick = () => { hidden.clear(); refreshHidden(); };
+
   root.addEventListener("contextmenu", (e) => {
     if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return; // keep the native menu for typing fields
     e.preventDefault();
     const btn = root.querySelector(".an-copy-sel");
     const items = [];
+    const spans = selectionSpans();
+    if (spans.length) {
+      items.push([compactOn() ? "Hide selected lines" : "Hide selection", () => {
+        for (const sp of spans) compactOn() ? addHidden(sp.line, 0, Infinity) : addHidden(sp.line, sp.from, sp.to);
+        refreshHidden();
+      }]);
+    }
+    const rowEl = e.target.closest?.(".row");
+    if (rowEl && hidden.has(Number(rowEl.dataset.line))) {
+      items.push(["Show hidden text on this line", () => { hidden.delete(Number(rowEl.dataset.line)); refreshHidden(); }]);
+    }
+    if (hiddenCount()) items.push([`Show all hidden text (${hiddenCount()})`, () => { hidden.clear(); refreshHidden(); }]);
     const native = nativeSelText();
     if (native) items.push(["Copy selection", () => copyText(btn, async () => native)]);
     else if (tsel) items.push(["Copy selection", () => copyText(btn, tselText)]);

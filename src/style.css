@@ -246,3 +246,4 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 .an-toggle[hidden], .an-bar button[hidden] { display: none; }
 .an-editor { flex: 1; min-width: 0; box-sizing: border-box; resize: none; background: var(--bg); color: inherit; border: none; outline: none; padding: 4px 10px 4px 14px; font-family: monospace; font-size: var(--an-font, 13px); line-height: 1.4; white-space: pre; overflow: auto; tab-size: 4; user-select: text; -webkit-user-select: text; cursor: text; }
 .an-editor[hidden] { display: none; }
+.hid { background: #000; color: #000; border-radius: 2px; }

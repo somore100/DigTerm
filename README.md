@@ -77,6 +77,11 @@ open any command's output in a viewer built for very large outputs.
   only warning and error lines (everything else collapses into `⋯ N lines hidden` rows). Uses the same word lists as the
   highlighting.
 - Zoom with Ctrl +/−/0 or Ctrl+wheel.
+- **Hide** (right-click a selection in the terminal or the viewer): draws the selected text as black blocks, for screen
+  sharing and screenshots. Show it again from the right-click menu (in the viewer also the Show hidden button). View
+  only: the saved output is unchanged and copying from the terminal or viewer gives `█` for hidden text, but the
+  Commands list's Copy and Analyze read the saved output, and in the viewer the Patterns panel, search and fold
+  summaries still read the original text.
 - **Edit** (off by default): text files opened in the viewer (Ctrl+click, drop, `digterm file`) can be edited up to 5 MB
   with an Edit checkbox, saved only when you press Save (or Ctrl+S). It refuses to save if the file changed on disk
   meanwhile, keeps Windows line endings, and `.log` files stay read-only.

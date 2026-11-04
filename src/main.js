@@ -158,6 +158,7 @@ class Pane {
     this.cwd = cwd ?? null;
     this.lines = 0;
     this.blocks = []; // finished commands, in order
+    this.hides = []; // {marker, deco, x0, x1}: black overlay cells over hidden text (right-click > Hide selection)
     this.running = null; // {li, timer, id}: the command that has started but not finished
     this.doneId = 0; // id of the newest finished command
     this.picked = new Set(); // indexes of commands ticked for "analyze several together"
@@ -194,6 +195,7 @@ class Pane {
     this.term = new Terminal({
       fontFamily: "monospace",
       fontSize: this.font,
+      allowProposedApi: true, // decorations (Hide) are still marked experimental in xterm.js
       scrollback: prefs.scrollback, // full output is kept on disk by the backend, not here
       theme: XTERM_THEMES[effectiveTheme()],
     });
@@ -354,11 +356,86 @@ class Pane {
       if (info?.kind === "text") items.push(["Open in Digterm viewer", () => openTarget(this, info, "viewer")], ...(info.safe ? [["Show in terminal (cat)", () => openTarget(this, info, "cat")]] : IS_WIN ? [] : [["Show in terminal safely (cat -v)", () => openTarget(this, info, "catv")]]), ["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
       if (info?.kind === "file") items.push(["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
       if (info?.kind) items.push([info.kind === "url" ? "Copy link" : "Copy path", () => navigator.clipboard.writeText(info.path).then(() => toast("Copied"))]);
-      if (selected) items.push(["Copy", () => navigator.clipboard.writeText(maskCopy(selected)).then(copiedToast)]);
+      if (selected) items.push(["Copy", () => navigator.clipboard.writeText(maskCopy(this.selectedText())).then(copiedToast)]);
+      if (selected) items.push(["Hide selection", () => this.hideSelection()]);
+      const cell = this.cellAt(e);
+      const here = cell ? this.liveHides().filter((h) => h.marker.line === cell.y && cell.x >= h.x0 && cell.x < h.x1) : [];
+      if (here.length) items.push(["Show hidden text here", () => this.showHides(here)]);
+      if (this.liveHides().length) items.push([`Show all hidden text (${this.liveHides().length})`, () => this.showHides([...this.hides])]);
       items.push(["Reset terminal display", () => this.term.reset()]); // clears a broken state, e.g. after cat of a binary file
       items.push(["Paste", () => navigator.clipboard.readText().then((t) => t && this.term.paste(t)).catch(() => {})]);
       showContextMenu(e.clientX, e.clientY, items);
     });
+  }
+
+  // --- Hide in the terminal: black overlay cells (xterm decorations). The text stays in the buffer, so copying from
+  // the terminal replaces hidden cells with █ (selectedText). The Commands list and the viewer read the saved output.
+  cellAt(e) {
+    const r = this.termEl.querySelector(".xterm-screen")?.getBoundingClientRect();
+    if (!r) return null;
+    const buf = this.term.buffer.active;
+    return { x: Math.floor((e.clientX - r.left) / (r.width / this.term.cols)), y: buf.viewportY + Math.floor((e.clientY - r.top) / (r.height / this.term.rows)) };
+  }
+
+  // The selection as {start, end} (0-based cells, end exclusive), ordered, or null.
+  orderedSelection() {
+    const p = this.term.getSelectionPosition?.();
+    if (!p) return null;
+    const swap = p.start.y > p.end.y || (p.start.y === p.end.y && p.start.x > p.end.x);
+    return swap ? { start: p.end, end: p.start } : { start: p.start, end: p.end };
+  }
+
+  liveHides() {
+    this.hides = this.hides.filter((h) => !h.marker.isDisposed);
+    return this.hides;
+  }
+
+  hideSelection() {
+    const p = this.orderedSelection();
+    if (!p) return;
+    const buf = this.term.buffer.active;
+    const cursor = buf.baseY + buf.cursorY;
+    for (let y = p.start.y; y <= p.end.y; y++) {
+      const x0 = Math.max(0, y === p.start.y ? p.start.x : 0);
+      const x1 = Math.min(this.term.cols, y === p.end.y ? p.end.x : this.term.cols);
+      if (x1 <= x0) continue;
+      const marker = this.term.registerMarker(y - cursor);
+      if (!marker || marker.line < 0) continue;
+      const deco = this.term.registerDecoration({ marker, x: x0, width: x1 - x0, backgroundColor: "#000000", foregroundColor: "#000000", layer: "top" });
+      if (deco) this.hides.push({ marker, deco, x0, x1 });
+    }
+    this.term.clearSelection?.();
+  }
+
+  showHides(list) {
+    for (const h of list) h.deco.dispose();
+    this.hides = this.hides.filter((h) => !list.includes(h));
+  }
+
+  // The selected text, with hidden cells replaced by █ (the same as getSelection() when nothing is hidden).
+  selectedText() {
+    const raw = this.term.getSelection();
+    const hides = this.liveHides();
+    const p = this.orderedSelection();
+    if (!raw || !hides.length || !p) return raw;
+    const buf = this.term.buffer.active;
+    const hiddenAt = (y, x) => hides.some((h) => h.marker.line === y && x >= h.x0 && x < h.x1);
+    let out = "";
+    for (let y = p.start.y; y <= p.end.y; y++) {
+      const line = buf.getLine(y);
+      if (!line) continue;
+      const from = y === p.start.y ? p.start.x : 0;
+      const to = Math.min(y === p.end.y ? p.end.x : this.term.cols, this.term.cols);
+      let t = "";
+      for (let x = from; x < to; x++) {
+        const c = line.getCell(x);
+        if (!c) continue;
+        t += hiddenAt(y, x) ? (c.getWidth() === 0 ? "" : "█") : c.getChars() || (c.getWidth() === 0 ? "" : " ");
+      }
+      const next = y < p.end.y ? buf.getLine(y + 1) : null;
+      out += next?.isWrapped ? t : t.replace(/\s+$/, "") + (y < p.end.y ? "\n" : "");
+    }
+    return out;
   }
 
   // The word under the mouse (or the selected text when it is a single line), without quotes.
@@ -936,7 +1013,7 @@ function runAction(id) {
     case "prevTab": cycleTab(-1); return true;
     case "nextTab": cycleTab(1); return true;
     case "copy": {
-      const text = activePane?.term.getSelection();
+      const text = activePane?.selectedText();
       if (text && !analyzeOpen) { navigator.clipboard.writeText(maskCopy(text)).then(copiedToast); return true; }
       return false; // nothing selected: let the key through
     }

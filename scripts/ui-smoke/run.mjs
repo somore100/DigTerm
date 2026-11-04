@@ -199,6 +199,41 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   v?.querySelector(".an-close").click();
 }
 
+// Hide: selected lines become black blocks in the rows and in copies, and can be shown again
+{
+  let copiedText = null;
+  Object.defineProperty(w.navigator, "clipboard", { value: { writeText: async (t) => { copiedText = t; } }, configurable: true });
+  globalThis.__lines = ["secret one", "public two"];
+  await globalThis.__events["tauri://drag-drop"]({ payload: { paths: ["/tmp/hide-me.txt"] } });
+  await wait(40);
+  const v = document.getElementById("analyze");
+  const rowText = (n) => v.querySelector(`.row[data-line="${n}"]`)?.textContent ?? "";
+  const rightClick = async (el) => {
+    el.dispatchEvent(new w.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+    await wait(20);
+    return [...document.querySelectorAll(".ctx-menu button")];
+  };
+  const pick = async (items, re) => { items.find((b) => re.test(b.textContent))?.click(); await wait(30); };
+  check(rowText(0).includes("secret one"), "the line is visible before hiding");
+  v.querySelector('.row[data-line="0"] .tx').click(); // selects the line
+  await wait(20);
+  let items = await rightClick(v.querySelector('.row[data-line="0"]'));
+  check(items.some((b) => /^Hide selection/.test(b.textContent)), "right-click on a selection offers Hide");
+  await pick(items, /^Hide selection/);
+  check(!rowText(0).includes("secret") && rowText(0).includes("██████████") && rowText(1).includes("public two"), `the hidden line is drawn as blocks, others stay: got ${JSON.stringify(rowText(0))}`);
+  check(v.querySelector('.row[data-line="0"] .hid'), "hidden text is marked for black styling");
+  check(!v.querySelector(".an-unhide-all").hidden, "a Show hidden button appears");
+  v.querySelector(".an-copy-all").click();
+  await wait(30);
+  check(copiedText?.startsWith("██████████\npublic two") && !copiedText.includes("secret"), `copy gives blocks, never the hidden text: got ${JSON.stringify(copiedText?.slice(0, 40))}`);
+  items = await rightClick(v.querySelector('.row[data-line="0"]'));
+  check(items.some((b) => /Show hidden text on this line/.test(b.textContent)) && items.some((b) => /Show all hidden text \(1\)/.test(b.textContent)), "right-click on a hidden line offers to show it");
+  await pick(items, /Show hidden text on this line/);
+  check(rowText(0).includes("secret one") && v.querySelector(".an-unhide-all").hidden, "showing it again restores the text");
+  v.querySelector(".an-close").click();
+  globalThis.__lines = null;
+}
+
 // folder of the command that printed a line: the newest marker at or above the line wins
 {
   const { cwdForLine } = await import(pathToFileURL(path.join(root, "src/folders.js")).href);
@@ -341,6 +376,42 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(odd.some((t) => /cat -v/.test(t)) && !odd.some((t) => t === "Show in terminal (cat)"), "a file with control characters is offered with cat -v instead of cat");
   check(odd.includes("Reset terminal display"), "the terminal menu can reset a broken display");
   globalThis.__selection = "";
+}
+
+// Hide in the terminal: black overlay cells over the selection; copying from the terminal never gives hidden text
+{
+  let copiedText = null;
+  Object.defineProperty(w.navigator, "clipboard", { value: { writeText: async (t) => { copiedText = t; } }, configurable: true });
+  const termEl = document.querySelector(".pane .pane-term");
+  for (const k of Object.keys(w.localStorage)) if (/mask/i.test(k)) w.localStorage.removeItem(k); // earlier tests turned masking on
+  const menuItems = async () => {
+    termEl.dispatchEvent(new w.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    await wait(40);
+    return [...document.querySelectorAll(".ctx-menu button")];
+  };
+  const choose = async (re) => { (await menuItems()).find((b) => re.test(b.textContent))?.click(); await wait(20); };
+  globalThis.__rows = { 1: "password=hunter2 user=alice" };
+  globalThis.__cursorLine = 2;
+  globalThis.__decos = [];
+  globalThis.__selection = "hunter2";
+  globalThis.__selPos = { start: { x: 9, y: 1 }, end: { x: 16, y: 1 } };
+  await choose(/^Hide selection/);
+  const d = globalThis.__decos[0]?.o;
+  check(d && d.x === 9 && d.width === 7 && d.marker.line === 1 && d.backgroundColor === "#000000" && d.foregroundColor === "#000000", `Hide covers exactly the selected cells with a black overlay: got ${JSON.stringify(d && { x: d.x, width: d.width, line: d.marker.line })}`);
+  globalThis.__selection = "password=hunter2 user=alice";
+  globalThis.__selPos = { start: { x: 0, y: 1 }, end: { x: 27, y: 1 } };
+  await choose(/^Copy$/);
+  check(copiedText === "password=███████ user=alice", `terminal copy replaces hidden cells: got ${JSON.stringify(copiedText)}`);
+  const labels = (await menuItems()).map((b) => b.textContent);
+  document.querySelectorAll(".ctx-menu").forEach((m) => m.remove());
+  check(labels.some((t) => /Show all hidden text \(1\)/.test(t)), "the menu offers to show hidden text again");
+  await choose(/Show all hidden text/);
+  check(globalThis.__decos[0].disposed, "showing removes the black overlay");
+  await choose(/^Copy$/);
+  check(copiedText === "password=hunter2 user=alice", `after showing, copy gives the real text: got ${JSON.stringify(copiedText)}`);
+  globalThis.__selection = "";
+  globalThis.__selPos = undefined;
+  globalThis.__rows = undefined;
 }
 
 // right-click menu on a selected folder name: its entries must be clickable and reach the backend
