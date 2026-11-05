@@ -247,3 +247,9 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 .an-editor { flex: 1; min-width: 0; box-sizing: border-box; resize: none; background: var(--bg); color: inherit; border: none; outline: none; padding: 4px 10px 4px 14px; font-family: monospace; font-size: var(--an-font, 13px); line-height: 1.4; white-space: pre; overflow: auto; tab-size: 4; user-select: text; -webkit-user-select: text; cursor: text; }
 .an-editor[hidden] { display: none; }
 .hid { background: #000; color: #000; border-radius: 2px; }
+
+.dict-search { width: 100%; margin-bottom: 8px; box-sizing: border-box; }
+table.dict { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.dict th, table.dict td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line); }
+table.dict td:not(:first-child) { font-family: monospace; cursor: pointer; }
+table.dict td:not(:first-child):hover { background: var(--hover); }

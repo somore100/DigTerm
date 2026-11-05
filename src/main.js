@@ -9,6 +9,7 @@ import { getVersion, getName } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze, finishFollow } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
+import { COLUMNS, searchCommands } from "./cmddict.js";
 import { toast, copiedToast } from "./toast.js";
 import { showContextMenu } from "./ctxmenu.js";
 import { renderFeedbackForm } from "./feedback.js";
@@ -1251,6 +1252,36 @@ function showPasteDialog() {
   });
 }
 
+function showCommandDictionary() {
+  openDialog("Linux / Windows commands", (body) => {
+    const q = document.createElement("input");
+    q.placeholder = "Search (for example: delete, ps, network)";
+    q.className = "dict-search";
+    const table = document.createElement("table");
+    table.className = "dict";
+    const render = () => {
+      table.replaceChildren();
+      const head = table.insertRow();
+      for (const c of COLUMNS) head.append(Object.assign(document.createElement("th"), { textContent: c }));
+      for (const r of searchCommands(q.value)) {
+        const tr = table.insertRow();
+        r.forEach((c, i) => {
+          const td = tr.insertCell();
+          td.textContent = c;
+          if (i > 0) { td.title = "Click to copy"; td.onclick = () => navigator.clipboard.writeText(c).then(copiedToast).catch(() => {}); }
+        });
+      }
+    };
+    q.oninput = render;
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = "A reference only: nothing is translated or run. Click a command to copy it.";
+    body.append(q, table, note);
+    render();
+    q.focus();
+  });
+}
+
 function showShortcuts() {
   openDialog("Keyboard shortcuts", (body) => {
     const warn = document.createElement("div");
@@ -1445,6 +1476,7 @@ function renderMenu() {
   item("Analyze full output of this terminal", null, () => analyzeFull(activePane));
   item("Analyze pasted text…", "analyzeText", showPasteDialog);
   item("History of earlier sessions…", null, showHistory);
+  item("Linux / Windows commands…", null, showCommandDictionary);
   sep();
   item("Fullscreen", "fullscreen", toggleFullscreen);
   item((prefs.alwaysOnTop ? "✓ " : "") + "Always on top", null, () => setAlwaysOnTop(!prefs.alwaysOnTop));

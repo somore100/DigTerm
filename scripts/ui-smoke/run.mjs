@@ -486,6 +486,14 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   w.localStorage.setItem("digterm.prefs", JSON.stringify({ ...prefsBox, copyStyle: "windows" }));
 }
 
+// command dictionary
+{
+  const { searchCommands } = await import("../../src/cmddict.js");
+  check(searchCommands("delete").length > 0, "dictionary finds 'delete'");
+  check(searchCommands("tasklist").some((r) => r[1] === "ps aux"), "dictionary finds a Windows command and shows the Linux one");
+  check(searchCommands("zzzz").length === 0, "dictionary returns nothing for nonsense");
+}
+
 if (problems.length) {
   console.error(`UI smoke test FAILED (${problems.length}):\n` + problems.join("\n---\n"));
   process.exit(1);
