@@ -504,6 +504,40 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(suggest("./gti") === null, "paths are left alone");
 }
 
+// history: date range, sort, selection, copy, delete
+{
+  document.getElementById("menu-btn").click();
+  [...menu.querySelectorAll("button")].find((b) => /History of earlier/.test(b.textContent))?.click();
+  await wait(30);
+  const host = document.getElementById("dialog-host");
+  const rows = () => [...host.querySelectorAll(".hist-run")];
+  const [sortSel, rangeSel] = host.querySelectorAll(".hist-bar select");
+  check(rows().length === 3, "history lists all three sessions");
+  rangeSel.value = "3"; // past 7 days
+  rangeSel.dispatchEvent(new w.Event("change"));
+  check(rows().length === 2, "the date range hides the old session");
+  rangeSel.value = "0";
+  sortSel.value = "big";
+  sortSel.dispatchEvent(new w.Event("change"));
+  check(/8\.6 MB/.test(rows()[0].textContent), "sorting by size puts the largest first");
+  const all = host.querySelector(".hist-bar input[type=checkbox]");
+  all.checked = true;
+  all.dispatchEvent(new w.Event("change"));
+  check(/3 selected/.test(host.querySelector(".hist-count").textContent), "select all selects what is shown");
+  const btn = (t) => [...host.querySelectorAll(".hist-bar button")].find((b) => b.textContent.startsWith(t));
+  let clip = "";
+  Object.defineProperty(w.navigator, "clipboard", { value: { writeText: async (t) => { clip = t; }, readText: async () => "" }, configurable: true });
+  btn("Copy commands").click();
+  await wait(30);
+  check(/ls -la {2}\(3 lines, exit 0\)/.test(clip) && clip.split("# ").length === 4, "Copy commands copies every selected session's command list");
+  btn("Delete selected").click();
+  check(!globalThis.__calls.some(([c]) => c === "delete_runs"), "Delete asks for a second click");
+  btn("Click again").click();
+  await wait(30);
+  check(globalThis.__calls.some(([c, a]) => c === "delete_runs" && a.names.length === 3), "second click deletes the selected sessions");
+  press({ key: "Escape", code: "Escape" });
+}
+
 if (problems.length) {
   console.error(`UI smoke test FAILED (${problems.length}):\n` + problems.join("\n---\n"));
   process.exit(1);

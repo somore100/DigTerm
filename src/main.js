@@ -33,18 +33,24 @@ const PREF_DEFAULTS = {
   copyMode: "output", // output | command
   splitByEntry: true, // Analyze opens one command (true) or the whole run (false)
   folderLinks: true, // Ctrl+click a folder name in the output to cd into it
-  autoFix: "off", // off | passive (offer a fix after "command not found") | aggressive (run it when sure and harmless)
+  autoFix: "off", // off | passive (offer a fix after "command not found") | prefill (type it, you press Enter) | aggressive (run it when sure and harmless)
   autoFixLevel: "medium", // high | medium | low: how sure a suggestion must be
   alwaysOnTop: false, // keep the window above other windows
   copyStyle: "terminal", // terminal: Ctrl+Shift+C/V only (Ctrl+C interrupts) | windows: Ctrl+C copies when text is selected, Ctrl+V pastes
   newestBottom: true, // Commands list: first command on top, newest at the bottom (list follows the bottom)
-  cleanupDays: 0, // delete saved output older than this many days on start; 0 = never
+  cleanAge: 0, // autoclean by time: delete closed output older than this many cleanUnit; 0 = never
+  cleanUnit: "day", // minute | hour | day | month | year
+  cleanMaxMb: 0, // autoclean by size: keep saved output under this many MB; 0 = no limit
+  cleanWhole: false, // when over the size: false = delete the oldest until it fits, true = delete all closed output
   keys: {}, // action id -> combo overrides
 };
 
 function loadPrefs() {
   try {
-    return { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem("digterm.prefs") || "{}") };
+    const p = { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem("digterm.prefs") || "{}") };
+    if (p.cleanupDays > 0 && !p.cleanAge) { p.cleanAge = p.cleanupDays; p.cleanUnit = "day"; } // setting from versions before 0.3
+    delete p.cleanupDays;
+    return p;
   } catch {
     return { ...PREF_DEFAULTS };
   }
@@ -53,6 +59,15 @@ function savePrefs() {
   try { localStorage.setItem("digterm.prefs", JSON.stringify(prefs)); } catch {}
 }
 const prefs = loadPrefs();
+
+const CLEAN_UNITS = { minute: 60, hour: 3600, day: 86400, month: 2592000, year: 31536000 };
+// Applies the autoclean rules from the preferences; null when no rule is set.
+async function runAutoclean() {
+  const olderSecs = prefs.cleanAge * (CLEAN_UNITS[prefs.cleanUnit] ?? 86400);
+  const maxBytes = Math.round(prefs.cleanMaxMb * 1048576);
+  if (!olderSecs && !maxBytes) return null;
+  return invoke("autoclean", { olderSecs, maxBytes, whole: prefs.cleanWhole });
+}
 
 // ---------------------------------------------------------------- theme
 
@@ -523,17 +538,22 @@ class Pane {
     if (prefs.autoFix === "off") return;
     const s = suggest(cmd, IS_WIN);
     if (!s || s.confidence < LEVELS.low) return;
-    const run = () => {
+    const run = (enter = true) => {
       if (this.id === null) return;
-      invoke("pty_write", { id: this.id, data: `\x15${s.fixed}\r` }); // Ctrl+U clears what was typed
+      invoke("pty_write", { id: this.id, data: `\x15${s.fixed}${enter ? "\r" : ""}` }); // Ctrl+U clears what was typed
       this.term.focus();
     };
-    const auto = prefs.autoFix === "aggressive" && s.safe && s.confidence >= LEVELS[prefs.autoFixLevel] && b.id === this.doneId;
+    const sure = s.confidence >= LEVELS[prefs.autoFixLevel] && b.id === this.doneId;
+    const auto = prefs.autoFix === "aggressive" && s.safe && sure;
+    const prefill = prefs.autoFix === "prefill" && sure;
     const hint = document.createElement("span");
     hint.className = "fix-hint";
     const code = document.createElement("code");
     code.textContent = s.fixed;
-    if (auto) {
+    if (prefill) {
+      hint.append("Typed for you, press Enter: ", code);
+      run(false);
+    } else if (auto) {
       hint.append("Ran instead: ", code);
       run();
     } else {
@@ -1205,28 +1225,39 @@ function showPreferences() {
     for (const [v, l] of [[false, "Newest at the top"], [true, "Newest at the bottom (follows new commands)"]]) order.add(new Option(l, v, false, prefs.newestBottom === v));
     order.onchange = () => { prefs.newestBottom = order.value === "true"; savePrefs(); applyCommandOrder(); };
 
-    const days = document.createElement("input");
-    days.type = "number"; days.min = 0; days.max = 3650; days.value = prefs.cleanupDays;
-    days.onchange = () => { prefs.cleanupDays = Math.min(3650, Math.max(0, Math.floor(Number(days.value)) || 0)); savePrefs(); };
+    const age = document.createElement("input");
+    age.type = "number"; age.min = 0; age.max = 100000; age.value = prefs.cleanAge;
+    const unit = document.createElement("select");
+    for (const u of Object.keys(CLEAN_UNITS)) unit.add(new Option(u + "s", u, false, prefs.cleanUnit === u));
+    const ageRow = document.createElement("span");
+    ageRow.append(age, " ", unit);
+    const maxMb = document.createElement("input");
+    maxMb.type = "number"; maxMb.min = 0; maxMb.max = 10000000; maxMb.value = prefs.cleanMaxMb;
+    const whole = document.createElement("select");
+    for (const [v, l] of [[false, "Delete the oldest until it fits"], [true, "Delete all closed output"]]) whole.add(new Option(l, v, false, prefs.cleanWhole === v));
     const usage = document.createElement("span");
     const showUsage = async () => {
       try { const [n, b] = await invoke("runs_usage"); usage.textContent = `${n} files, ${fmtBytes(b)}`; } catch {}
     };
     showUsage();
+    const saveClean = () => {
+      prefs.cleanAge = Math.min(100000, Math.max(0, Math.floor(Number(age.value)) || 0));
+      prefs.cleanUnit = unit.value;
+      prefs.cleanMaxMb = Math.min(10000000, Math.max(0, Number(maxMb.value) || 0));
+      prefs.cleanWhole = whole.value === "true";
+      savePrefs();
+    };
+    for (const el of [age, unit, maxMb, whole]) el.onchange = saveClean;
     const clean = document.createElement("button");
-    clean.textContent = "Delete older than that now";
-    clean.title = "Deletes saved output of closed terminals (all of it when the number of days is 0)";
+    clean.textContent = "Clean up now";
+    clean.title = "Applies the two rules above to closed terminals' saved output; open terminals are never touched";
     clean.onclick = async () => {
-      const d = Math.floor(Number(days.value)) || 0;
-      if (!clean.armed) { // second click confirms; native confirm() is not relied on in the webview
-        clean.armed = true;
-        clean.textContent = d > 0 ? `Click again: delete older than ${d} days` : "Click again: delete ALL closed output";
-        setTimeout(() => { clean.armed = false; clean.textContent = "Delete older than that now"; }, 4000);
-        return;
-      }
-      clean.armed = false;
-      clean.textContent = "Delete older than that now";
-      try { const [n, b] = await invoke("cleanup_runs", { days: d }); usage.textContent = n ? `Done: removed ${n} files, freed ${fmtBytes(b)}` : "Nothing to remove"; setTimeout(showUsage, 2500); } catch (e) { usage.textContent = String(e); }
+      saveClean();
+      try {
+        const r = await runAutoclean();
+        usage.textContent = r === null ? "Set a rule above first" : r[0] ? `Done: removed ${r[0]} files, freed ${fmtBytes(r[1])}` : "Nothing to remove";
+        setTimeout(showUsage, 2500);
+      } catch (e) { usage.textContent = String(e); }
     };
     const cleanRow = document.createElement("span");
     cleanRow.append(clean, " ", usage);
@@ -1240,7 +1271,7 @@ function showPreferences() {
     copyStyle.onchange = () => { prefs.copyStyle = copyStyle.value; savePrefs(); };
 
     const fix = document.createElement("select");
-    for (const [v, l] of [["off", "Off"], ["passive", "Passive: offer a fix after a command is not found"], ["aggressive", "Aggressive: also run it when sure and harmless"]]) fix.add(new Option(l, v, false, prefs.autoFix === v));
+    for (const [v, l] of [["off", "Off"], ["passive", "Passive: offer a fix after a command is not found"], ["prefill", "Prefill: type the fix on the line, you press Enter"], ["aggressive", "Aggressive: also run it when sure and harmless"]]) fix.add(new Option(l, v, false, prefs.autoFix === v));
     fix.onchange = () => { prefs.autoFix = fix.value; savePrefs(); };
     const fixLevel = document.createElement("select");
     for (const [v, l] of [["high", "High: only near-certain fixes"], ["medium", "Medium"], ["low", "Low: also unsure guesses"]]) fixLevel.add(new Option(l, v, false, prefs.autoFixLevel === v));
@@ -1252,12 +1283,14 @@ function showPreferences() {
       heading("Tabs"), opt("Tab title", titleStyle),
       heading("Startup"), opt("Restore directories on start", restore),
       heading("Terminal"), opt("Copy and paste keys", copyStyle),
-      opt("Fix commands that are not found (typos, Windows names on Linux)", fix), opt("How sure a fix must be to run by itself", fixLevel), opt("Scrollback lines (full output is always saved to disk)", scroll),
+ opt("Scrollback lines (full output is always saved to disk)", scroll),
       opt("Ctrl+click a folder or file name in the output to open it", links),
+      heading("Autocorrect"), opt("Commands that are not found (typos, Windows names on Linux)", fix), opt("How sure a fix must be to run by itself", fixLevel),
       heading("Privacy"), opt("Mask IPs, emails, user names and secrets when copying (details in the viewer)", mask),
       heading("Commands list"), opt("Order", order),
       opt("Analyze one command at a time (off: Analyze opens the whole run)", split),
-      heading("Saved output"), opt("Delete saved output older than (days, 0 = never)", days), opt("Disk used", cleanRow),
+      heading("Saved output"), opt("Delete output older than (0 = never)", ageRow),
+      opt("Keep saved output under this size in MB (0 = no limit)", maxMb), opt("When over that size", whole), opt("Disk used", cleanRow),
     );
     const note = document.createElement("div");
     note.className = "note";
@@ -1361,36 +1394,67 @@ function showShortcuts() {
   });
 }
 
+const HIST_RANGES = [["All time", 0], ["Past hour", 3600], ["Past 24 hours", 86400], ["Past 7 days", 7 * 86400], ["Past 30 days", 30 * 86400], ["Past year", 365 * 86400]];
+const HIST_SORTS = {
+  new: ["Newest first", (a, b) => b.modified - a.modified],
+  old: ["Oldest first", (a, b) => a.modified - b.modified],
+  big: ["Largest first", (a, b) => b.size - a.size],
+  small: ["Smallest first", (a, b) => a.size - b.size],
+};
+
 function showHistory() {
   openDialog("History", (body) => {
+    const fmtSize = (n) => (n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`);
     const note = document.createElement("div");
     note.className = "note";
-    note.textContent = "Saved output of this and earlier sessions. Click a session to see its commands. Delete old files under Preferences.";
+    note.textContent = "Saved output of this and earlier sessions. Click a session to see its commands. Automatic cleanup is under Preferences.";
+    const sortSel = document.createElement("select");
+    for (const [v, [l]] of Object.entries(HIST_SORTS)) sortSel.add(new Option(l, v));
+    const rangeSel = document.createElement("select");
+    HIST_RANGES.forEach(([l], i) => rangeSel.add(new Option(l, i)));
+    const all = document.createElement("input");
+    all.type = "checkbox";
+    all.title = "Select everything shown";
+    const count = document.createElement("span");
+    count.className = "hist-count";
+    const mk = (text, title) => Object.assign(document.createElement("button"), { textContent: text, title });
+    const copySel = mk("Copy commands", "Copies the command lists of the selected sessions");
+    const delSel = mk("Delete selected", "Deletes the saved output of the selected sessions (open terminals are kept)");
+    const clear = mk("Clear history", "Deletes the saved output of all closed terminals; open terminals are kept");
+    const bar = document.createElement("div");
+    bar.className = "hist-bar";
+    bar.append(all, sortSel, rangeSel, count, copySel, delSel, clear);
     const list = document.createElement("div");
     list.className = "history";
-    const clear = document.createElement("button");
-    clear.textContent = "Clear history";
-    clear.title = "Deletes the saved output of all closed terminals; open terminals are kept";
-    clear.onclick = async () => {
-      if (!clear.armed) { // second click confirms
-        clear.armed = true;
-        clear.textContent = "Click again to delete all closed history";
-        setTimeout(() => { clear.armed = false; clear.textContent = "Clear history"; }, 4000);
-        return;
-      }
-      clear.armed = false;
-      clear.textContent = "Clear history";
-      try { await invoke("cleanup_runs", { days: 0 }); } catch (e) { list.textContent = String(e); return; }
-      load();
+    body.append(note, bar, list);
+
+    let runs = [];
+    const picked = new Set();
+    const shown = () => {
+      const lim = HIST_RANGES[Number(rangeSel.value)][1];
+      const since = Date.now() / 1000 - lim;
+      return runs.filter((r) => !lim || r.modified >= since).sort(HIST_SORTS[sortSel.value][1]);
     };
-    body.append(note, clear, list);
-    const fmtSize = (n) => (n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`);
+    const refreshBar = () => {
+      const v = shown();
+      const sel = v.filter((r) => picked.has(r.name));
+      count.textContent = `${v.length} shown · ${sel.length} selected`;
+      copySel.disabled = delSel.disabled = !sel.length;
+      all.checked = v.length > 0 && sel.length === v.length;
+    };
     const addRun = (r) => {
       const row = document.createElement("div");
       row.className = "hist-run";
+      const top = document.createElement("div");
+      top.className = "hist-top";
+      const pick = document.createElement("input");
+      pick.type = "checkbox";
+      pick.checked = picked.has(r.name);
+      pick.onchange = () => { pick.checked ? picked.add(r.name) : picked.delete(r.name); refreshBar(); };
       const head = document.createElement("button");
       head.className = "hist-head";
       head.textContent = `${new Date(r.modified * 1000).toLocaleString()} · ${fmtSize(r.size)}${r.open ? " · open now" : ""}`;
+      top.append(pick, head);
       const cmds = document.createElement("div");
       cmds.className = "hist-cmds";
       cmds.hidden = true;
@@ -1422,14 +1486,60 @@ function showHistory() {
           loaded = false;
         }
       };
-      row.append(head, cmds);
+      row.append(top, cmds);
       list.append(row);
     };
-    const load = () => invoke("list_runs").then((runs) => {
+    const render = () => {
       list.replaceChildren();
-      if (!runs.length) list.textContent = "No saved output yet.";
-      runs.forEach(addRun);
+      const v = shown();
+      if (!v.length) list.textContent = runs.length ? "Nothing in this time range." : "No saved output yet.";
+      v.forEach(addRun);
+      refreshBar();
+    };
+    const load = () => invoke("list_runs").then((r) => {
+      runs = r;
+      for (const n of [...picked]) if (!runs.some((x) => x.name === n)) picked.delete(n);
+      render();
     }).catch((e) => { list.textContent = String(e); });
+
+    sortSel.onchange = rangeSel.onchange = render;
+    all.onchange = () => {
+      for (const r of shown()) all.checked ? picked.add(r.name) : picked.delete(r.name);
+      render();
+    };
+    copySel.onclick = async () => {
+      const chosen = shown().filter((r) => picked.has(r.name));
+      let out = "";
+      try {
+        for (const r of chosen) {
+          out += `# ${new Date(r.modified * 1000).toLocaleString()} · ${fmtSize(r.size)}\n`;
+          for (const [b, text] of await invoke("scan_run", { name: r.name })) {
+            const c = text.split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
+            out += `${c || "(unknown command)"}  (${b.lines.toLocaleString()} lines, exit ${b.exit ?? "?"})\n`;
+          }
+          out += "\n";
+        }
+        await navigator.clipboard.writeText(maskCopy(out.trimEnd()));
+        copiedToast();
+      } catch (e) { count.textContent = String(e); }
+    };
+    const confirmable = (btn, label, armedLabel, act) => {
+      const text = btn.textContent;
+      btn.onclick = async () => {
+        if (!btn.armed) { // second click confirms; native confirm() is not relied on in the webview
+          btn.armed = true;
+          btn.textContent = armedLabel();
+          setTimeout(() => { btn.armed = false; btn.textContent = text; }, 4000);
+          return;
+        }
+        btn.armed = false;
+        btn.textContent = text;
+        try { await act(); } catch (e) { list.textContent = String(e); return; }
+        load();
+      };
+    };
+    confirmable(delSel, "Delete selected", () => `Click again: delete ${picked.size} sessions`, () => invoke("delete_runs", { names: [...picked] }));
+    confirmable(clear, "Clear history", () => "Click again to delete all closed history", () => invoke("cleanup_runs", { days: 0 }));
     load();
   });
 }
@@ -1582,7 +1692,8 @@ await listen("pty-exit", (e) => {
 
 applyCommandOrder();
 if (prefs.alwaysOnTop) getCurrentWindow().setAlwaysOnTop(true).catch(() => {});
-if (prefs.cleanupDays > 0) invoke("cleanup_runs", { days: prefs.cleanupDays }).catch(() => {});
+runAutoclean().catch(() => {});
+setInterval(() => runAutoclean().catch(() => {}), 60000);
 
 new ResizeObserver(() => tabs.forEach(layoutTab)).observe($("stage"));
 applyTheme();

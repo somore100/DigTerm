@@ -43,8 +43,14 @@ open any command's output in a viewer built for very large outputs.
   prompts and typed commands and shows only the output.
 - The list can show the newest command at the top or at the bottom (Preferences). At the bottom it follows new commands.
 - **History of earlier sessions** (menu): browse the saved output of earlier sessions, open any command in the viewer,
-  or clear the history. Old saved output can also be deleted automatically after a number of days (Preferences, off by
-  default), and the disk space it uses is shown there.
+  or clear the history. Sort by date or size, filter by time range (past hour, week, year…), tick several sessions to
+  copy their command lists or delete them. Automatic cleanup (Preferences, off by default): delete output older than
+  N minutes/hours/days/months/years, and/or keep it under a size limit (delete the oldest until it fits, or all closed
+  output). Open terminals are never touched.
+- **Autocorrect** (Preferences, off by default): after "command not found", offer a fix for typos (`gti` → `git`) or
+  a translation (`cls` → `clear`, `ls` → `dir` on Windows); in aggressive mode it runs harmless fixes by itself.
+- **Linux / Windows commands** (menu): searchable reference table. **Always on top** and the copy/paste key style are
+  in Preferences.
 
 **Files, folders and links in the output**
 - **Ctrl+click** a folder name (for example in `ls` output) to `cd` into it, a text file to open it in the viewer, any

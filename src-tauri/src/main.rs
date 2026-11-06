@@ -782,6 +782,69 @@ fn cleanup_runs(app: AppHandle, state: State<'_, AppState>, days: u64) -> Result
     Ok((n, bytes))
 }
 
+/// Which saved files an automatic cleanup removes. `files` holds (size, age in seconds, in use by an open
+/// terminal); the result is the indexes to delete. `older` 0 = no age rule, `max` 0 = no size rule. Once the
+/// total is over `max`, the oldest closed files go first, or every closed file when `whole` is set.
+fn plan_cleanup(files: &[(u64, u64, bool)], older: u64, max: u64, whole: bool) -> Vec<usize> {
+    let mut del = vec![false; files.len()];
+    if older > 0 {
+        for (i, f) in files.iter().enumerate() {
+            if !f.2 && f.1 >= older {
+                del[i] = true;
+            }
+        }
+    }
+    if max > 0 {
+        let kept = |del: &[bool]| files.iter().zip(del).filter(|(_, d)| !**d).map(|(f, _)| f.0).sum::<u64>();
+        if kept(&del) > max {
+            let mut order: Vec<usize> = (0..files.len()).filter(|&i| !del[i] && !files[i].2).collect();
+            order.sort_by(|&a, &b| files[b].1.cmp(&files[a].1)); // oldest first
+            for i in order {
+                if !whole && kept(&del) <= max {
+                    break;
+                }
+                del[i] = true;
+            }
+        }
+    }
+    (0..files.len()).filter(|&i| del[i]).collect()
+}
+
+/// Applies the automatic cleanup rules. Returns (files deleted, bytes freed).
+#[tauri::command]
+fn autoclean(app: AppHandle, state: State<'_, AppState>, older_secs: u64, max_bytes: u64, whole: bool) -> Result<(u64, u64), String> {
+    let live: Vec<PathBuf> = state.sessions.lock().unwrap().values().map(|s| s.run_path.clone()).collect();
+    let files = run_files(&app)?;
+    let info: Vec<(u64, u64, bool)> = files.iter().map(|(p, size, age)| (*size, *age, live.contains(p))).collect();
+    let (mut n, mut bytes) = (0u64, 0u64);
+    for i in plan_cleanup(&info, older_secs, max_bytes, whole) {
+        if fs::remove_file(&files[i].0).is_ok() {
+            n += 1;
+            bytes += files[i].1;
+        }
+    }
+    Ok((n, bytes))
+}
+
+/// Deletes the named saved output files (never one an open terminal still writes to).
+#[tauri::command]
+fn delete_runs(app: AppHandle, state: State<'_, AppState>, names: Vec<String>) -> Result<(u64, u64), String> {
+    let live: Vec<PathBuf> = state.sessions.lock().unwrap().values().map(|s| s.run_path.clone()).collect();
+    let (mut n, mut bytes) = (0u64, 0u64);
+    for name in names {
+        let path = run_path_by_name(&app, &name)?;
+        if live.contains(&path) {
+            continue;
+        }
+        let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if fs::remove_file(&path).is_ok() {
+            n += 1;
+            bytes += size;
+        }
+    }
+    Ok((n, bytes))
+}
+
 #[derive(Serialize)]
 struct RunInfo {
     name: String,
@@ -1679,7 +1742,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, autoclean, delete_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
@@ -2092,5 +2155,18 @@ mod tests {
             assert_eq!(gapped.read(0, 2).unwrap(), vec!["AAA", "BBB"]);
             assert_eq!(gapped.read(1, 2).unwrap(), vec!["BBB"]);
         });
+    }
+
+    #[test]
+    fn plan_cleanup_applies_age_and_size_rules_and_spares_open_files() {
+        // (size, age in seconds, in use)
+        let f = [(100, 10, false), (100, 500, false), (100, 900, true), (100, 300, false)];
+        assert_eq!(plan_cleanup(&f, 0, 0, false), Vec::<usize>::new());
+        assert_eq!(plan_cleanup(&f, 400, 0, false), vec![1]); // only the closed file older than 400 s
+        assert_eq!(plan_cleanup(&f, 0, 250, false), vec![1, 3]); // oldest closed first, stops once under the limit
+        assert_eq!(plan_cleanup(&f, 0, 250, true), vec![0, 1, 3]); // "whole": every closed file
+        assert_eq!(plan_cleanup(&f, 400, 250, false), vec![1, 3]); // age rule first, then size
+        assert_eq!(plan_cleanup(&[(500, 1, true)], 0, 100, true), Vec::<usize>::new()); // an open file is never removed
+        assert_eq!(plan_cleanup(&f, 0, 1000, false), Vec::<usize>::new()); // under the limit: nothing
     }
 }

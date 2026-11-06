@@ -256,3 +256,8 @@ table.dict td:not(:first-child):hover { background: var(--hover); }
 .fix-hint { font-size: 11px; color: var(--note-fg); }
 .fix-hint code { background: var(--note-bg); padding: 0 4px; border-radius: 3px; }
 .fix-hint button { padding: 0 6px; font-size: 11px; }
+.hist-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; }
+.hist-count { font-size: 11px; opacity: 0.75; margin-right: auto; }
+.hist-top { display: flex; align-items: center; gap: 6px; }
+.hist-top .hist-head { flex: 1; }
+.dialog .hist-top .hist-head { width: auto; }
