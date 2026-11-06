@@ -253,3 +253,6 @@ table.dict { border-collapse: collapse; width: 100%; font-size: 12px; }
 table.dict th, table.dict td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line); }
 table.dict td:not(:first-child) { font-family: monospace; cursor: pointer; }
 table.dict td:not(:first-child):hover { background: var(--hover); }
+.fix-hint { font-size: 11px; color: var(--note-fg); }
+.fix-hint code { background: var(--note-bg); padding: 0 4px; border-radius: 3px; }
+.fix-hint button { padding: 0 6px; font-size: 11px; }

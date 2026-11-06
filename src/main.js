@@ -9,6 +9,7 @@ import { getVersion, getName } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze, finishFollow } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
+import { suggest, LEVELS } from "./suggest.js";
 import { COLUMNS, searchCommands } from "./cmddict.js";
 import { toast, copiedToast } from "./toast.js";
 import { showContextMenu } from "./ctxmenu.js";
@@ -32,6 +33,8 @@ const PREF_DEFAULTS = {
   copyMode: "output", // output | command
   splitByEntry: true, // Analyze opens one command (true) or the whole run (false)
   folderLinks: true, // Ctrl+click a folder name in the output to cd into it
+  autoFix: "off", // off | passive (offer a fix after "command not found") | aggressive (run it when sure and harmless)
+  autoFixLevel: "medium", // high | medium | low: how sure a suggestion must be
   alwaysOnTop: false, // keep the window above other windows
   copyStyle: "terminal", // terminal: Ctrl+Shift+C/V only (Ctrl+C interrupts) | windows: Ctrl+C copies when text is selected, Ctrl+V pastes
   newestBottom: true, // Commands list: first command on top, newest at the bottom (list follows the bottom)
@@ -515,6 +518,33 @@ class Pane {
     this.running = null;
   }
 
+  // After "command not found": show what was probably meant (passive) or run it when sure and harmless (aggressive)
+  offerFix(cmd, b, info) {
+    if (prefs.autoFix === "off") return;
+    const s = suggest(cmd, IS_WIN);
+    if (!s || s.confidence < LEVELS.low) return;
+    const run = () => {
+      if (this.id === null) return;
+      invoke("pty_write", { id: this.id, data: `\x15${s.fixed}\r` }); // Ctrl+U clears what was typed
+      this.term.focus();
+    };
+    const auto = prefs.autoFix === "aggressive" && s.safe && s.confidence >= LEVELS[prefs.autoFixLevel] && b.id === this.doneId;
+    const hint = document.createElement("span");
+    hint.className = "fix-hint";
+    const code = document.createElement("code");
+    code.textContent = s.fixed;
+    if (auto) {
+      hint.append("Ran instead: ", code);
+      run();
+    } else {
+      const btn = document.createElement("button");
+      btn.textContent = "Run";
+      btn.onclick = () => { run(); hint.remove(); };
+      hint.append(s.kind === "translate" ? "Here that is: " : "Did you mean: ", code, " ", btn);
+    }
+    info.append(hint);
+  }
+
   addBlock(b) {
     finishFollow(b); // a viewer following this command stops at the final end
     this.clearRunning();
@@ -532,6 +562,7 @@ class Pane {
         const c = t.split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
         cmdText.textContent = c;
         cmdText.title = c;
+        if (b.exit === 127 || b.exit === 9009) this.offerFix(c, b, info);
       })
       .catch(() => {});
     const idx = this.blocks.length - 1;
@@ -1208,12 +1239,20 @@ function showPreferences() {
     for (const [v, l] of [["terminal", "Terminal: Ctrl+Shift+C / Ctrl+Shift+V (Ctrl+C always interrupts)"], ["windows", "Windows: Ctrl+C copies when text is selected, Ctrl+V pastes"]]) copyStyle.add(new Option(l, v, false, prefs.copyStyle === v));
     copyStyle.onchange = () => { prefs.copyStyle = copyStyle.value; savePrefs(); };
 
+    const fix = document.createElement("select");
+    for (const [v, l] of [["off", "Off"], ["passive", "Passive: offer a fix after a command is not found"], ["aggressive", "Aggressive: also run it when sure and harmless"]]) fix.add(new Option(l, v, false, prefs.autoFix === v));
+    fix.onchange = () => { prefs.autoFix = fix.value; savePrefs(); };
+    const fixLevel = document.createElement("select");
+    for (const [v, l] of [["high", "High: only near-certain fixes"], ["medium", "Medium"], ["low", "Low: also unsure guesses"]]) fixLevel.add(new Option(l, v, false, prefs.autoFixLevel === v));
+    fixLevel.onchange = () => { prefs.autoFixLevel = fixLevel.value; savePrefs(); };
+
     body.append(
       heading("Appearance"), opt("Theme", theme), opt("Font size", font), opt("Keep window on top of others", onTop),
       opt("Smaller text when a tab has more terminals", auto),
       heading("Tabs"), opt("Tab title", titleStyle),
       heading("Startup"), opt("Restore directories on start", restore),
-      heading("Terminal"), opt("Copy and paste keys", copyStyle), opt("Scrollback lines (full output is always saved to disk)", scroll),
+      heading("Terminal"), opt("Copy and paste keys", copyStyle),
+      opt("Fix commands that are not found (typos, Windows names on Linux)", fix), opt("How sure a fix must be to run by itself", fixLevel), opt("Scrollback lines (full output is always saved to disk)", scroll),
       opt("Ctrl+click a folder or file name in the output to open it", links),
       heading("Privacy"), opt("Mask IPs, emails, user names and secrets when copying (details in the viewer)", mask),
       heading("Commands list"), opt("Order", order),
