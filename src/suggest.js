@@ -54,7 +54,15 @@ export function suggest(cmdLine, win = false, known = KNOWN) {
     const d = distance(w, k);
     if (d < bd) { bd = d; best = [k]; } else if (d === bd) best.push(k);
   }
-  if (bd > max || best.length !== 1) return null; // ties are not guessed
-  const confidence = Math.max(0, 1 - bd / (w.length + 2)) * (bd === 1 ? 1 : 0.9);
+  if (bd > max) return null;
+  let tie = 1;
+  if (best.length > 1) { // a cut-off word ("sud") may mean the one command it is the start of ("sudo"); other ties are not guessed
+    let starts = best.filter((k) => k.startsWith(w));
+    if (starts.length !== 1) starts = best.filter((k) => k.endsWith(w.slice(-1))); // "pytho3": the 3 points to python3
+    if (starts.length !== 1) return null;
+    best = starts;
+    tie = 0.9;
+  }
+  const confidence = Math.max(0, 1 - bd / (w.length + 2)) * (bd === 1 ? 1 : 0.9) * tie;
   return { fixed: best[0] + rest, kind: "typo", confidence, safe: !DANGEROUS.has(best[0]) };
 }

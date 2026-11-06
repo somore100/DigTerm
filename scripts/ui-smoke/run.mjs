@@ -501,6 +501,7 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(suggest("ls", true)?.fixed === "dir", "ls -> dir on Windows");
   check(suggest("foobar x") === null, "unknown commands are left alone");
   check(suggest("dir")?.safe === true && suggest("del f")?.safe === false, "destructive fixes are never safe to auto-run");
+  check(suggest("sud apt update")?.fixed === "sudo apt update" && suggest("sud apt update").confidence >= 0.7, "a cut-off word that is the start of one command is fixed");
   check(suggest("./gti") === null, "paths are left alone");
 }
 
