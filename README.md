@@ -6,7 +6,7 @@ Digterm is a normal terminal (your own shell; `vim`, `ssh` and `htop` all work) 
 Everything a command prints is also saved to disk unchanged, so nothing is lost to scrollback limits, and you can
 open any command's output in a viewer built for very large outputs.
 
-> **Status:** early development (0.2). Linux is the primary platform. Windows and macOS builds are
+> **Status:** early development (0.3). Linux is the primary platform. Windows and macOS builds are
 > produced by CI but are not finished yet (see [Platform support](#platform-support)). Not yet code-signed.
 
 ## Why Digterm?
@@ -181,6 +181,11 @@ On Debian or Ubuntu use the equivalent `-dev` packages from the
 ## Roadmap
 
 Roughly in the order I plan to do them. Nothing here is promised, and the order may change.
+
+**Done in 0.3**
+- Edit small text files; Hide (blackout) selected text; always on top and copy/paste key style; Linux / Windows command
+  dictionary; autocorrect for commands that are not found (passive, prefill, aggressive); History sorting, date
+  ranges, selection and automatic cleanup by age or size; run commands one by one; colour buttons for saved recipes.
 
 **Done in 0.2**
 - Command text, duration and numbering in the Commands list; history of earlier sessions and cleanup of old saved
