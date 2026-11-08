@@ -1,10 +1,11 @@
 # Digterm
 
-A terminal that helps you **understand** large command output, not just display it.
+A terminal that helps you **understand** large command output, not just display it, and helps you **work** with it:
+queue commands, keep one-click buttons for services you start often, and get gentle fixes for mistyped commands.
 
 Digterm is a normal terminal (your own shell; `vim`, `ssh` and `htop` all work) with an analysis layer on top.
 Everything a command prints is also saved to disk unchanged, so nothing is lost to scrollback limits, and you can
-open any command's output in a viewer built for very large outputs.
+open any command's output in a viewer built for very large outputs, or follow a command that is still running.
 
 > **Status:** early development (0.3). Linux is the primary platform. Windows and macOS builds are
 > produced by CI but are not finished yet (see [Platform support](#platform-support)). Not yet code-signed.
@@ -47,6 +48,8 @@ open any command's output in a viewer built for very large outputs.
   copy their command lists or delete them. Automatic cleanup (Preferences, off by default): delete output older than
   N minutes/hours/days/months/years, and/or keep it under a size limit (delete the oldest until it fits, or all closed
   output). Open terminals are never touched.
+
+**Workflow helpers** (all optional; the ones that change behaviour are off by default)
 - **Autocorrect** (Preferences, off by default): after "command not found", offer a fix for typos (`gti` → `git`) or
   a translation (`cls` → `clear`, `ls` → `dir` on Windows); in aggressive mode it runs harmless fixes by itself.
 - **Run commands one by one** (menu): paste several commands; each is sent only after the previous one has finished,
