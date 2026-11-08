@@ -539,6 +539,34 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   press({ key: "Escape", code: "Escape" });
 }
 
+// run commands one by one
+{
+  const { parseLines, startDelayMs } = await import("../../src/batch.js");
+  check(parseLines("a\n\n# c\n  b  \r\n").join("|") === "a|b", "queue lines: blanks and comments skipped");
+  const noon = new Date(2026, 0, 1, 12, 0, 0);
+  check(startDelayMs("at", "12:30", noon) === 30 * 60000, "start at a time later today");
+  check(startDelayMs("at", "11:00", noon) === 23 * 3600000, "start at a time already past means tomorrow");
+  check(startDelayMs("in", "5", noon) === 300000 && startDelayMs("now", "") === 0, "start in N minutes / now");
+  check(startDelayMs("at", "25:00", noon) === null && startDelayMs("in", "abc", noon) === null, "invalid start times are refused");
+
+  document.getElementById("menu-btn").click();
+  [...menu.querySelectorAll("button")].find((b) => /Run commands one by one/.test(b.textContent))?.click();
+  await wait(20);
+  const host = document.getElementById("dialog-host");
+  const area = host.querySelector(".batch-area");
+  area.value = "echo one\n# skip\necho two";
+  [...host.querySelectorAll("button")].find((b) => b.textContent === "Start").click();
+  await wait(20);
+  const sid = globalThis.__calls.find(([c, a]) => c === "pty_write" && /echo one/.test(a.data))?.[1].id; // the terminal the queue runs in
+  const writes = () => globalThis.__calls.filter(([c, a]) => c === "pty_write" && /echo (one|two)/.test(a.data)).map(([, a]) => a.data);
+  check(writes().length === 1 && /echo one\r$/.test(writes()[0]), "the queue sends the first command at once");
+  check(document.querySelector(".queue-bar"), "a queue bar shows while it runs");
+  await globalThis.__events["pty-block"]({ payload: { session: sid, id: 300, cmd_start: 1, start: 2, end: 3, lines: 1, exit: 0, ms: 5 } });
+  check(writes().length === 2 && /echo two\r$/.test(writes()[1]), "the next command is sent when the first has finished");
+  await globalThis.__events["pty-block"]({ payload: { session: sid, id: 301, cmd_start: 4, start: 5, end: 6, lines: 1, exit: 0, ms: 5 } });
+  check(!document.querySelector(".queue-bar"), "the queue bar goes away when all have run");
+}
+
 if (problems.length) {
   console.error(`UI smoke test FAILED (${problems.length}):\n` + problems.join("\n---\n"));
   process.exit(1);

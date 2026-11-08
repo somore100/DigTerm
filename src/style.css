@@ -261,3 +261,6 @@ table.dict td:not(:first-child):hover { background: var(--hover); }
 .hist-top { display: flex; align-items: center; gap: 6px; }
 .hist-top .hist-head { flex: 1; }
 .dialog .hist-top .hist-head { width: auto; }
+.queue-bar { position: absolute; left: 8px; bottom: 8px; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 6px; }
+.batch-area { width: 100%; box-sizing: border-box; font-family: monospace; margin-bottom: 6px; }
+.batch-row { display: flex; gap: 6px; margin-bottom: 6px; }

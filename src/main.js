@@ -9,6 +9,7 @@ import { getVersion, getName } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze, finishFollow } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
+import { parseLines, startDelayMs } from "./batch.js";
 import { suggest, LEVELS } from "./suggest.js";
 import { COLUMNS, searchCommands } from "./cmddict.js";
 import { toast, copiedToast } from "./toast.js";
@@ -181,6 +182,7 @@ class Pane {
     this.blocks = []; // finished commands, in order
     this.hides = []; // {marker, deco, x0, x1}: black overlay cells over hidden text (right-click > Hide selection)
     this.running = null; // {li, timer, id}: the command that has started but not finished
+    this.queue = null; // {lines, sent, stop, timer, started, bar}: commands waiting to run one after another
     this.doneId = 0; // id of the newest finished command
     this.picked = new Set(); // indexes of commands ticked for "analyze several together"
     this.pickBoxes = [];
@@ -533,6 +535,48 @@ class Pane {
     this.running = null;
   }
 
+  // Run commands one after another: each is sent when the previous one has finished (after an optional delay).
+  startQueue(lines, delayMs, stop, startText) {
+    this.cancelQueue();
+    const q = (this.queue = { lines, sent: 0, stop, timer: 0, started: false, bar: document.createElement("div"), label: document.createElement("span") });
+    q.bar.className = "queue-bar";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.onclick = () => this.cancelQueue("Queue cancelled");
+    q.bar.append(q.label, cancel);
+    this.el.append(q.bar);
+    const go = () => {
+      if (this.queue !== q) return;
+      if (this.running || this.id === null) return this.cancelQueue("Queue cancelled: a command is still running");
+      q.started = true;
+      this.sendQueued();
+    };
+    if (delayMs > 0) {
+      q.label.textContent = `${lines.length} commands, ${startText}`;
+      q.timer = setTimeout(go, delayMs);
+    } else go();
+  }
+  sendQueued() {
+    const q = this.queue;
+    invoke("pty_write", { id: this.id, data: `\x15${q.lines[q.sent++]}\r` }); // Ctrl+U clears what was typed
+    q.label.textContent = `Running ${q.sent} of ${q.lines.length}`;
+  }
+  queueAfter(b) {
+    const q = this.queue;
+    if (!q?.started) return;
+    if (b.exit !== 0 && q.stop) return this.cancelQueue(`Queue stopped: command ${q.sent} failed (exit ${b.exit ?? "?"})`);
+    if (q.sent >= q.lines.length) return this.cancelQueue(`Queue finished: ${q.lines.length} commands`);
+    this.sendQueued();
+  }
+  cancelQueue(message) {
+    const q = this.queue;
+    if (!q) return;
+    clearTimeout(q.timer);
+    q.bar.remove();
+    this.queue = null;
+    if (message) toast(message, 3500);
+  }
+
   // After "command not found": show what was probably meant (passive) or run it when sure and harmless (aggressive)
   offerFix(cmd, b, info) {
     if (prefs.autoFix === "off") return;
@@ -567,6 +611,7 @@ class Pane {
 
   addBlock(b) {
     finishFollow(b); // a viewer following this command stops at the final end
+    this.queueAfter(b);
     this.clearRunning();
     this.doneId = Math.max(this.doneId, b.id);
     this.blocks.push(b);
@@ -658,6 +703,7 @@ class Pane {
   }
 
   dispose() {
+    this.cancelQueue();
     this.clearRunning();
     this.term.dispose();
     this.el.remove();
@@ -1354,6 +1400,47 @@ function showCommandDictionary() {
   });
 }
 
+function showBatchDialog() {
+  openDialog("Run commands one by one", (body) => {
+    const area = document.createElement("textarea");
+    area.placeholder = "One command per line. Each runs after the previous one has finished.\nLines starting with # are skipped.";
+    area.rows = 8;
+    area.className = "batch-area";
+    const mode = document.createElement("select");
+    for (const [v, l] of [["now", "Start now"], ["in", "Start in … minutes"], ["at", "Start at a time (HH:MM)"]]) mode.add(new Option(l, v));
+    const when = document.createElement("input");
+    when.size = 6;
+    when.hidden = true;
+    mode.onchange = () => { when.hidden = mode.value === "now"; when.placeholder = mode.value === "in" ? "10" : "23:30"; };
+    const stop = document.createElement("input");
+    stop.type = "checkbox"; stop.checked = true;
+    const warn = document.createElement("div");
+    warn.className = "warn";
+    const go = Object.assign(document.createElement("button"), { textContent: "Start" });
+    go.onclick = () => {
+      const lines = parseLines(area.value);
+      const delay = startDelayMs(mode.value, when.value);
+      if (!lines.length) return void (warn.textContent = "Type at least one command.");
+      if (delay === null) return void (warn.textContent = mode.value === "in" ? "Minutes must be a number." : "Use a time like 23:30.");
+      if (!activePane || activePane.id === null) return void (warn.textContent = "Open a terminal first.");
+      if (activePane.running) return void (warn.textContent = "A command is still running in this terminal.");
+      const text = mode.value === "in" ? `starting in ${when.value} min` : `starting at ${when.value.trim()}`;
+      const pane = activePane;
+      closeDialog();
+      pane.startQueue(lines, delay, stop.checked, text);
+    };
+    const row = document.createElement("div");
+    row.className = "batch-row";
+    row.append(mode, when);
+    body.append(area, row, opt("Stop if a command fails", stop), warn, go);
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = "Runs in the active terminal. A command you type yourself while the queue runs counts as a step finishing, so wait for it to end.";
+    body.append(note);
+    area.focus();
+  });
+}
+
 function showShortcuts() {
   openDialog("Keyboard shortcuts", (body) => {
     const warn = document.createElement("div");
@@ -1625,6 +1712,7 @@ function renderMenu() {
   item("Analyze full output of this terminal", null, () => analyzeFull(activePane));
   item("Analyze pasted text…", "analyzeText", showPasteDialog);
   item("History of earlier sessions…", null, showHistory);
+  item("Run commands one by one…", null, showBatchDialog);
   item("Linux / Windows commands…", null, showCommandDictionary);
   sep();
   item("Fullscreen", "fullscreen", toggleFullscreen);
