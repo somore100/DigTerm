@@ -9,6 +9,7 @@ import { getVersion, getName } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze, finishFollow } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
+import { loadLaunchers, saveLaunchers, normalize, PALETTE, WHERE } from "./launchers.js";
 import { parseLines, startDelayMs } from "./batch.js";
 import { suggest, LEVELS } from "./suggest.js";
 import { COLUMNS, searchCommands } from "./cmddict.js";
@@ -34,6 +35,7 @@ const PREF_DEFAULTS = {
   copyMode: "output", // output | command
   splitByEntry: true, // Analyze opens one command (true) or the whole run (false)
   folderLinks: true, // Ctrl+click a folder name in the output to cd into it
+  buttonsShown: false, // the colour buttons strip on the left
   autoFix: "off", // off | passive (offer a fix after "command not found") | prefill (type it, you press Enter) | aggressive (run it when sure and harmless)
   autoFixLevel: "medium", // high | medium | low: how sure a suggestion must be
   alwaysOnTop: false, // keep the window above other windows
@@ -1441,6 +1443,106 @@ function showBatchDialog() {
   });
 }
 
+// ---------------------------------------------------------------- colour buttons
+
+let launchers = loadLaunchers();
+const launched = new Map(); // button id -> the Pane it started
+const launcherBusy = (l) => {
+  const p = launched.get(l.id);
+  return !!p && [...panes.values()].includes(p) && !!(p.running || p.queue);
+};
+
+async function runLauncher(l) {
+  const old = launched.get(l.id);
+  if (launcherBusy(l)) { selectTab(old.tab); focusPane(old); return; } // already running: show it
+  const lines = parseLines(l.commands);
+  const base = l.cwd || activePane?.cwd || undefined;
+  let pane;
+  if (l.where === "current") {
+    pane = activePane;
+    if (!pane || pane.id === null || pane.running) return toast("A command is still running in this terminal");
+    if (l.cwd) lines.unshift(`cd ${IS_WIN ? `"${l.cwd}"` : `-- ${shellQuote(l.cwd)}`}`);
+  } else if (l.where === "split" && activeTab) {
+    pane = await addPane(activeTab, base);
+  } else {
+    pane = (await newTab(base)).panes[0];
+  }
+  launched.set(l.id, pane);
+  pane.startQueue(lines, 0, true, "");
+  renderLaunchers();
+}
+
+function stopLauncher(l) {
+  const p = launched.get(l.id);
+  if (!p || p.id === null) return;
+  p.cancelQueue();
+  invoke("pty_write", { id: p.id, data: "\x03" }); // Ctrl+C
+}
+
+function renderLaunchers() {
+  const host = $("launchers");
+  host.hidden = !prefs.buttonsShown;
+  host.replaceChildren();
+  if (!prefs.buttonsShown) return;
+  for (const l of launchers) {
+    const b = document.createElement("button");
+    b.className = "launcher" + (launcherBusy(l) ? " on" : "");
+    b.style.setProperty("--c", l.color);
+    b.title = `${l.name}${launcherBusy(l) ? " (running, click to show)" : ""}\n${parseLines(l.commands)[0]}${parseLines(l.commands).length > 1 ? " …" : ""}\nRight-click: edit, stop`;
+    b.onclick = () => runLauncher(l);
+    b.oncontextmenu = (e) => {
+      e.preventDefault();
+      showContextMenu(e.clientX, e.clientY, [["Edit…", () => showLauncherEditor(l)], ["Stop (Ctrl+C)", () => stopLauncher(l)], ["Delete", () => { launchers = launchers.filter((x) => x !== l); saveLaunchers(launchers); renderLaunchers(); }]]);
+    };
+    host.append(b);
+  }
+  const add = Object.assign(document.createElement("button"), { className: "launcher-add", textContent: "+", title: "New button" });
+  add.onclick = () => showLauncherEditor(null);
+  host.append(add);
+}
+setInterval(() => { if (prefs.buttonsShown) for (const [i, b] of [...$("launchers").querySelectorAll(".launcher")].entries()) if (launchers[i]) b.classList.toggle("on", launcherBusy(launchers[i])); }, 1000);
+
+function setButtonsShown(on) {
+  prefs.buttonsShown = on;
+  savePrefs();
+  renderLaunchers();
+  requestAnimationFrame(() => tabs.forEach((t) => t.panes.forEach((p) => { try { p.fit.fit(); } catch {} })));
+}
+
+function showLauncherEditor(existing) {
+  openDialog(existing ? "Edit button" : "New button", (body) => {
+    const name = Object.assign(document.createElement("input"), { value: existing?.name ?? "", placeholder: "Name (for example: dev server)" });
+    let color = existing?.color ?? PALETTE[0];
+    const swatches = document.createElement("div");
+    swatches.className = "swatches";
+    const paint = () => swatches.querySelectorAll("button").forEach((b) => b.classList.toggle("sel", b.dataset.c === color));
+    for (const c of PALETTE) {
+      const b = Object.assign(document.createElement("button"), { type: "button" });
+      b.dataset.c = c;
+      b.style.background = c;
+      b.onclick = () => { color = c; paint(); };
+      swatches.append(b);
+    }
+    paint();
+    const cwd = Object.assign(document.createElement("input"), { value: existing?.cwd ?? "", placeholder: "Folder (empty: the current terminal's folder)" });
+    const where = document.createElement("select");
+    for (const [v, l] of WHERE) where.add(new Option(l, v, false, (existing?.where ?? "tab") === v));
+    const cmds = Object.assign(document.createElement("textarea"), { value: existing?.commands ?? "", rows: 6, className: "batch-area", placeholder: "Commands, one per line. Each runs after the previous one has finished." });
+    const warn = Object.assign(document.createElement("div"), { className: "warn" });
+    const save = Object.assign(document.createElement("button"), { textContent: "Save" });
+    save.onclick = () => {
+      const l = normalize({ id: existing?.id, name: name.value, color, cwd: cwd.value, where: where.value, commands: cmds.value });
+      if (!l) return void (warn.textContent = "A button needs a name and at least one command.");
+      launchers = existing ? launchers.map((x) => (x === existing ? l : x)) : [...launchers, l];
+      saveLaunchers(launchers);
+      closeDialog();
+      renderLaunchers();
+    };
+    body.append(opt("Name", name), opt("Colour", swatches), opt("Folder", cwd), opt("Runs", where), cmds, warn, save);
+    name.focus();
+  });
+}
+
 function showShortcuts() {
   openDialog("Keyboard shortcuts", (body) => {
     const warn = document.createElement("div");
@@ -1713,6 +1815,7 @@ function renderMenu() {
   item("Analyze pasted text…", "analyzeText", showPasteDialog);
   item("History of earlier sessions…", null, showHistory);
   item("Run commands one by one…", null, showBatchDialog);
+  item((prefs.buttonsShown ? "✓ " : "") + "Colour buttons panel", null, () => setButtonsShown(!prefs.buttonsShown));
   item("Linux / Windows commands…", null, showCommandDictionary);
   sep();
   item("Fullscreen", "fullscreen", toggleFullscreen);
@@ -1780,6 +1883,7 @@ await listen("pty-exit", (e) => {
 
 applyCommandOrder();
 if (prefs.alwaysOnTop) getCurrentWindow().setAlwaysOnTop(true).catch(() => {});
+renderLaunchers();
 runAutoclean().catch(() => {});
 setInterval(() => runAutoclean().catch(() => {}), 60000);
 

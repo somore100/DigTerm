@@ -51,6 +51,9 @@ open any command's output in a viewer built for very large outputs.
   a translation (`cls` → `clear`, `ls` → `dir` on Windows); in aggressive mode it runs harmless fixes by itself.
 - **Run commands one by one** (menu): paste several commands; each is sent only after the previous one has finished,
   as its own block. Optional start delay (now, in N minutes, at HH:MM) and stop-on-error.
+- **Colour buttons** (menu → Colour buttons panel, off by default): a strip on the left with a coloured dot per saved
+  recipe (name, colour, folder, commands, and whether it runs in a new tab, a new pane or the current terminal).
+  Click to run; a pulsing ring means it is running and clicking again shows it. Right-click: edit, stop, delete.
 - **Linux / Windows commands** (menu): searchable reference table. **Always on top** and the copy/paste key style are
   in Preferences.
 

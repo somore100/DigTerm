@@ -264,3 +264,13 @@ table.dict td:not(:first-child):hover { background: var(--hover); }
 .queue-bar { position: absolute; left: 8px; bottom: 8px; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 6px; }
 .batch-area { width: 100%; box-sizing: border-box; font-family: monospace; margin-bottom: 6px; }
 .batch-row { display: flex; gap: 6px; margin-bottom: 6px; }
+#launchers { width: 36px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 0; background: var(--bg3); border-right: 1px solid var(--line); overflow-y: auto; }
+#launchers[hidden] { display: none; }
+.launcher { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 2px solid transparent; background: var(--c); cursor: pointer; }
+.launcher:hover { filter: brightness(1.2); }
+.launcher.on { border-color: var(--fg); box-shadow: 0 0 6px var(--c); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 1px var(--c); } }
+.launcher-add { width: 22px; height: 22px; padding: 0; border-radius: 50%; background: none; border: 1px dashed var(--line2); color: var(--fg); cursor: pointer; }
+.swatches { display: flex; gap: 6px; }
+.swatches button { width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; }
+.swatches button.sel { border-color: var(--fg); }

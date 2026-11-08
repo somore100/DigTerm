@@ -567,6 +567,35 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(!document.querySelector(".queue-bar"), "the queue bar goes away when all have run");
 }
 
+// colour buttons
+{
+  const { normalize } = await import("../../src/launchers.js");
+  check(normalize({ name: "x", commands: "ls" })?.where === "tab" && normalize({ name: "", commands: "ls" }) === null && normalize({ name: "x", commands: "# only a comment" }) === null, "a button needs a name and a real command");
+  const host = document.getElementById("launchers");
+  if (host.hidden) { // (the earlier "click every menu entry" loop already switched it on once)
+    document.getElementById("menu-btn").click();
+    [...menu.querySelectorAll("button")].find((b) => /Colour buttons/.test(b.textContent))?.click();
+    await wait(20);
+  }
+  check(!host.hidden && host.querySelector(".launcher-add"), "the menu shows the strip with a + button");
+  host.querySelector(".launcher-add").click();
+  await wait(20);
+  const dlg = document.getElementById("dialog-host");
+  const [nameIn] = dlg.querySelectorAll("input");
+  nameIn.value = "server";
+  dlg.querySelector("textarea").value = "echo serve-it";
+  [...dlg.querySelectorAll("button")].find((b) => b.textContent === "Save").click();
+  await wait(20);
+  check(host.querySelectorAll(".launcher").length === 1, "saving adds a coloured button");
+  const spawns = () => globalThis.__calls.filter(([c]) => c === "pty_spawn").length;
+  const before = spawns();
+  host.querySelector(".launcher").click();
+  await wait(150);
+  check(spawns() === before + 1, "clicking the button opens a new terminal");
+  check(globalThis.__calls.some(([c, a]) => c === "pty_write" && /echo serve-it\r$/.test(a.data)), "and runs its command there");
+  check(JSON.parse(w.localStorage.getItem("digterm.buttons") || "[]").length === 1, "buttons are saved");
+}
+
 if (problems.length) {
   console.error(`UI smoke test FAILED (${problems.length}):\n` + problems.join("\n---\n"));
   process.exit(1);
