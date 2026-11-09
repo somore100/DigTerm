@@ -71,7 +71,7 @@ export async function sendToRelay({ endpoint, to, appName, appVersion }, report,
   }
 }
 
-// cfg: { appName, appVersion, to, endpoint?, getSystemInfo(): Promise<[[k, v]]>, openMailto(url), openUrl(url), copy(text), fetchImpl? }
+// cfg: { appName, appVersion, to, endpoint?, issuesUrl?, getSystemInfo(): Promise<[[k, v]]>, openMailto(url), openUrl(url), copy(text), fetchImpl? }
 export function renderFeedbackForm(root, cfg) {
   root.classList.add("fb");
   root.innerHTML = `
@@ -90,7 +90,9 @@ export function renderFeedbackForm(root, cfg) {
       <button class="linkbtn fb-mail">Open in email app</button>
       <button class="linkbtn fb-gmail">Open in Gmail</button>
       <button class="linkbtn fb-copy">Copy report</button>
+      <button class="linkbtn fb-issues" hidden>Open GitHub issues</button>
     </div>
+    <div class="warn fb-privacy"></div>
     <div class="note fb-note"></div>`;
   const $ = (s) => root.querySelector(s);
   const typeEl = $(".fb-type");
@@ -100,6 +102,11 @@ export function renderFeedbackForm(root, cfg) {
   $(".fb-note").textContent = relay
     ? "Send delivers the report over HTTPS to the support inbox. The other buttons open your own email app, Gmail or the clipboard instead. Nothing is sent until you press one."
     : "Your email app opens with the report ready, and it is only sent when you press Send there. Nothing is sent by this window itself.";
+  $(".fb-privacy").textContent = (relay ? "Privacy: Send does not include your email address; the report holds only what the preview shows. " : "")
+    + '"Open in email app" and "Open in Gmail" send from your own address, so the recipient will see your email account. '
+    + (cfg.issuesUrl ? 'To stay private, use Send, or Copy report and post it on GitHub (or send it from another email).' : "To stay private, use Copy report and send it from another email.");
+  $(".fb-issues").hidden = !cfg.issuesUrl;
+  $(".fb-issues").onclick = () => cfg.openUrl(cfg.issuesUrl);
   $(".fb-send").hidden = !relay;
   $(".fb-or").hidden = !relay;
   const warn = $(".fb-warn");

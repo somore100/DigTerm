@@ -10,7 +10,7 @@ const EXTRA = ["git", "npm", "npx", "node", "yarn", "pnpm", "python", "python3",
 export const KNOWN = new Set([...EXTRA, ...COMMANDS.map((r) => r[1].split(/\s+/)[0])]);
 
 // commands that can destroy data: never run automatically
-const DANGEROUS = new Set(["rm", "dd", "mkfs", "shred", "kill", "killall", "chmod", "chown", "mv", "del", "taskkill", "rmdir", "format"]);
+const DANGEROUS = new Set(["rm", "dd", "mkfs", "shred", "kill", "killall", "chmod", "chown", "mv", "del", "taskkill", "rmdir", "format", "sudo", "su", "doas", "pkexec"]); // (privilege tools too: never guess those into a command)
 
 // Windows word -> Linux/macOS command
 const WIN_TO_UNIX = { dir: "ls", cls: "clear", type: "cat", copy: "cp", move: "mv", ren: "mv", del: "rm", tasklist: "ps aux", taskkill: "kill",

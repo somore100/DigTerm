@@ -484,20 +484,29 @@ fn spawn_detached(mut cmd: std::process::Command) -> Result<(), String> {
     Ok(())
 }
 
+/// True for files that the system would run rather than show (programs, scripts, shortcuts, installers).
+/// Opening one from a name in the output could start something the user only meant to look at.
+fn is_runnable(path: &Path) -> bool {
+    const RUNNABLE: &[&str] = &[
+        "exe", "com", "bat", "cmd", "msi", "msc", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "scr", "pif", "hta",
+        "reg", "lnk", "cpl", "jar", "dll", "sh", "desktop", "appimage", "run", "command", "app", "pkg", "workflow",
+    ];
+    path.extension().and_then(|e| e.to_str()).map_or(false, |e| RUNNABLE.contains(&e.to_ascii_lowercase().as_str()))
+}
+
 /// Opens a file or folder with the system's default application.
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err("That path no longer exists.".into());
     }
+    if is_runnable(Path::new(&path)) {
+        return Err("That file is a program or script, so it is not opened from here. Use \"Show in file manager\" instead.".into());
+    }
     #[cfg(target_os = "macos")]
     let mut cmd = std::process::Command::new("open");
     #[cfg(target_os = "windows")]
-    let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
-        c
-    };
+    let mut cmd = std::process::Command::new("explorer"); // no shell, so characters in the name are not interpreted
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let mut cmd = std::process::Command::new("xdg-open");
     cmd.arg(&path);
@@ -2168,5 +2177,15 @@ mod tests {
         assert_eq!(plan_cleanup(&f, 400, 250, false), vec![1, 3]); // age rule first, then size
         assert_eq!(plan_cleanup(&[(500, 1, true)], 0, 100, true), Vec::<usize>::new()); // an open file is never removed
         assert_eq!(plan_cleanup(&f, 0, 1000, false), Vec::<usize>::new()); // under the limit: nothing
+    }
+
+    #[test]
+    fn is_runnable_flags_programs_and_scripts_only() {
+        for name in ["a.exe", "B.BAT", "x.sh", "app.desktop", "tool.AppImage", "s.ps1", "link.lnk"] {
+            assert!(is_runnable(Path::new(name)), "{name}");
+        }
+        for name in ["notes.txt", "photo.png", "dir", "Makefile", "report.pdf", "log.raw"] {
+            assert!(!is_runnable(Path::new(name)), "{name}");
+        }
     }
 }

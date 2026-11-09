@@ -397,6 +397,7 @@ class Pane {
       const here = cell ? this.liveHides().filter((h) => h.marker.line === cell.y && cell.x >= h.x0 && cell.x < h.x1) : [];
       if (here.length) items.push(["Show hidden text here", () => this.showHides(here)]);
       if (this.liveHides().length) items.push([`Show all hidden text (${this.liveHides().length})`, () => this.showHides([...this.hides])]);
+      items.push(...moveTabItems([this], "Move to tab"));
       items.push(["Reset terminal display", () => this.term.reset()]); // clears a broken state, e.g. after cat of a binary file
       items.push(["Paste", () => navigator.clipboard.readText().then((t) => t && this.term.paste(t)).catch(() => {})]);
       showContextMenu(e.clientX, e.clientY, items);
@@ -901,6 +902,40 @@ function selectTab(tab) {
   }
 }
 
+// Moves terminals (their shells keep running) into another tab, or into a new tab when target is null.
+function movePanes(list, target) {
+  if (!list.length) return;
+  const from = list[0].tab;
+  if (target === from || (!target && from.panes.length === list.length)) return;
+  const dest = target ?? createTab();
+  for (const p of list) {
+    from.panes = from.panes.filter((x) => x !== p);
+    if (from.last === p) from.last = null;
+    if (from.zoomed === p) from.zoomed = null;
+    p.tab = dest;
+    dest.panes.push(p);
+    dest.grid.append(p.el);
+  }
+  dest.zoomed = null;
+  if (!from.panes.length) {
+    tabs.splice(tabs.indexOf(from), 1);
+    from.el.remove();
+  } else layoutTab(from);
+  layoutTab(dest);
+  selectTab(dest);
+  focusPane(list[0]);
+  requestAnimationFrame(() => dest.panes.forEach((p) => { try { p.fit.fit(); } catch {} }));
+  persist();
+}
+
+// menu entries for "move into another tab"
+function moveTabItems(list, label) {
+  const from = list[0].tab;
+  const items = tabs.filter((t) => t !== from).map((t) => [`${label}: ${tabs.indexOf(t) + 1}. ${tabTitle(t)}`, () => movePanes(list, t)]);
+  if (from.panes.length > list.length) items.push([`${label}: a new tab`, () => movePanes(list, null)]);
+  return items;
+}
+
 function closeTab(tab) {
   for (const p of [...tab.panes]) {
     if (p.id !== null) { panes.delete(p.id); invoke("pty_close", { id: p.id }); }
@@ -940,6 +975,11 @@ function renderTabBar(force = false) {
     b.append(title, x);
     b.onclick = () => selectTab(tab);
     b.onauxclick = (e) => { if (e.button === 1) closeTab(tab); };
+    b.oncontextmenu = (e) => {
+      e.preventDefault();
+      const items = moveTabItems([...tab.panes], "Combine into");
+      showContextMenu(e.clientX, e.clientY, [...items, ["Close tab", () => closeTab(tab)]]);
+    };
     host.append(b);
   });
 }
@@ -1752,6 +1792,7 @@ function showFeedback() {
       appName: name,
       appVersion: version,
       to: feedbackConfig.to,
+      issuesUrl: "https://github.com/somore100/DigTerm/issues/new",
       endpoint: (feedbackConfig.endpoint || "").trim(),
       getSystemInfo: () => invoke("system_info"),
       openMailto: (url) => invoke("open_mailto", { url }),

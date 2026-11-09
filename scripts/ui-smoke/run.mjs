@@ -596,6 +596,27 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(JSON.parse(w.localStorage.getItem("digterm.buttons") || "[]").length === 1, "buttons are saved");
 }
 
+// move a terminal / combine tabs
+{
+  document.getElementById("new-tab").click();
+  await wait(150);
+  const bar = () => [...document.querySelectorAll("#tabs .tab-btn")];
+  const n0 = bar().length;
+  check(n0 >= 2, "two tabs exist for the move test");
+  const first = bar()[0];
+  first.dispatchEvent(new w.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+  await wait(20);
+  const entries = [...document.querySelectorAll(".ctx-menu button")];
+  const combine = entries.find((b) => /^Combine into: /.test(b.textContent));
+  check(combine, "right-clicking a tab offers Combine into another tab");
+  const panesBefore = document.querySelectorAll(".pane").length;
+  combine?.click();
+  await wait(60);
+  check(bar().length === n0 - 1, "the combined tab is gone from the tab bar");
+  check(document.querySelectorAll(".pane").length === panesBefore, "no terminal was closed by combining");
+  check(!globalThis.__calls.slice(-5).some(([c]) => c === "pty_close"), "the shells keep running");
+}
+
 if (problems.length) {
   console.error(`UI smoke test FAILED (${problems.length}):\n` + problems.join("\n---\n"));
   process.exit(1);
