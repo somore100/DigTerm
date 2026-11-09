@@ -188,7 +188,8 @@ Roughly in the order I plan to do them. Nothing here is promised, and the order 
 **Done in 0.3**
 - Edit small text files; Hide (blackout) selected text; always on top and copy/paste key style; Linux / Windows command
   dictionary; autocorrect for commands that are not found (passive, prefill, aggressive); History sorting, date
-  ranges, selection and automatic cleanup by age or size; run commands one by one; colour buttons for saved recipes.
+  ranges, selection and automatic cleanup by age or size; run commands one by one; colour buttons for saved recipes;
+  move or combine terminals between tabs; a content security policy and safer opening of files from the output.
 
 **Done in 0.2**
 - Command text, duration and numbering in the Commands list; history of earlier sessions and cleanup of old saved
