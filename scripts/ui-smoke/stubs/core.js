@@ -13,6 +13,8 @@ export async function invoke(cmd, args) {
   if (cmd === "list_runs") { const now = Math.floor(Date.now() / 1000); return [{ name: "run-a.raw", size: 5000, modified: now - 60, open: false }, { name: "run-b.raw", size: 9000000, modified: now - 40 * 86400, open: false }, { name: "run-c.raw", size: 200000, modified: now - 3 * 86400, open: false }]; }
   if (cmd === "scan_run") return [[{ id: 1, lines: 3, exit: 0, start: 0, end: 5, cmd_start: 0, ms: 0 }, "ls -la"]];
   if (cmd === "delete_runs") return [args.names.length, 1000];
+  if (cmd === "read_block" && args.start === 7777) return "one 12:00:01\ntwo\nsame\n";
+  if (cmd === "read_block" && args.start === 8888) return "one 13:30:00\nTWO\nsame\nextra\n";
   if (cmd === "session_len") return globalThis.__sessionLen ?? null;
   if (cmd === "analyze_extend") return globalThis.__extendTo ?? 10;
   if (cmd === "analyze_groups") return globalThis.__groups ?? null;

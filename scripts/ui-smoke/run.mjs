@@ -617,6 +617,42 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(!globalThis.__calls.slice(-5).some(([c]) => c === "pty_close"), "the shells keep running");
 }
 
+// compare two outputs
+{
+  const { normalizeLine, diffLines } = await import("../../src/compare.js");
+  const key = (x) => normalizeLine(x, { times: true });
+  check(normalizeLine("2026-11-09 12:30:01 started id 1234") === "‹time› started id 1234", "times are ignored");
+  check(normalizeLine("pid 1234 took 56ms", { numbers: true }) === "pid # took #ms", "numbers can be ignored");
+  const d = diffLines(["a", "b", "c", "d"], ["a", "x", "c", "d", "e"]);
+  check(d.rows.map((r) => r.k).join() === "same,chg,same,same,add", "diff finds a changed line and an added line");
+  check(diffLines(["12:00:01 up", "z"], ["13:45:09 up", "z"], key).rows.every((r) => r.k === "same"), "lines differing only in time count as equal");
+  check(diffLines(["a", "b"], ["a"]).rows.map((r) => r.k).join() === "same,del", "a removed line shows as del");
+  check(diffLines([], []).rows.length === 0, "empty inputs compare fine");
+  // UI: tick two commands; Compare appears and opens the side-by-side view
+  const visiblePicks = () => [...document.querySelectorAll("#block-lists input.pick")].filter((x) => !x.closest("[hidden]"));
+  const spawnId = globalThis.__calls.filter(([c]) => c === "pty_spawn").length;
+  const before = visiblePicks().length;
+  for (const [id, start] of [[400, 7777], [401, 8888]]) {
+    for (let s2 = spawnId; s2 >= 1; s2--) { // the block goes to whichever session belongs to the focused pane
+      const n0 = visiblePicks().length;
+      await globalThis.__events["pty-block"]({ payload: { session: s2, id, cmd_start: start - 5, start, end: start + 9, lines: 3, exit: 0, ms: 1 } });
+      if (visiblePicks().length > n0) break;
+    }
+  }
+  const picks = visiblePicks().slice(-2);
+  check(picks.length === 2 && visiblePicks().length === before + 2, "two commands were added to the list");
+  const cmpBtn = document.getElementById("compare-selected");
+  for (const pk of picks) pk.click();
+  await wait(20);
+  check(!cmpBtn.hidden, "Compare shows when exactly two commands are ticked");
+  cmpBtn.click();
+  await wait(40);
+  const dlg = document.querySelector("#dialog-host .cmp");
+  check(dlg, "the compare view opens");
+  check(dlg?.querySelectorAll(".cmp-cell.diff").length === 4, "only real differences are marked (times ignored)");
+  press({ key: "Escape", code: "Escape" });
+}
+
 if (problems.length) {
   console.error(`UI smoke test FAILED (${problems.length}):\n` + problems.join("\n---\n"));
   process.exit(1);

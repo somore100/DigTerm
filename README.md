@@ -57,6 +57,9 @@ open any command's output in a viewer built for very large outputs, or follow a 
 - **Colour buttons** (menu → Colour buttons panel, off by default): a strip on the left with a coloured dot per saved
   recipe (name, colour, folder, commands, and whether it runs in a new tab, a new pane or the current terminal).
   Click to run; a pulsing ring means it is running and clicking again shows it. Right-click: edit, stop, delete.
+- **Compare two commands**: tick exactly two commands in the Commands list and press Compare. They open side by side
+  with changed, added and removed lines marked; dates, times and ids are ignored (options to also ignore all numbers,
+  show only differences, and jump to the next difference). Up to 8 MB per command.
 - **Linux / Windows commands** (menu): searchable reference table. **Always on top** and the copy/paste key style are
   in Preferences.
 
@@ -204,7 +207,6 @@ Roughly in the order I plan to do them. Nothing here is promised, and the order 
 **Then**
 - Ctrl+click on `file:line` in the output to open it at that line.
 - Diagnostic command presets (read-only, documented, human-editable), with a clear explanation before anything needs elevated privileges.
-- Comparing two runs of the same command, ignoring timestamps and process ids.
 - New Window.
 
 **Platforms**

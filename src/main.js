@@ -10,6 +10,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze, finishFollow } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
 import { loadLaunchers, saveLaunchers, normalize, PALETTE, WHERE } from "./launchers.js";
+import { renderCompare } from "./compare.js";
 import { parseLines, startDelayMs } from "./batch.js";
 import { suggest, LEVELS } from "./suggest.js";
 import { COLUMNS, searchCommands } from "./cmddict.js";
@@ -751,7 +752,24 @@ function updateMultiBar() {
   const n = activePane?.picked.size ?? 0;
   $("multi-bar").hidden = n === 0;
   $("analyze-selected").textContent = `Analyze ${n} selected`;
+  $("compare-selected").hidden = n !== 2;
 }
+
+// Compare two ticked commands side by side.
+const MAX_COMPARE_BYTES = 8 * 1048576;
+async function compareSelected(pane) {
+  const [i, j] = [...pane.picked].sort((x, y) => x - y);
+  const [ba, bb] = [pane.blocks[i], pane.blocks[j]];
+  if (!ba || !bb) return;
+  if (ba.end - ba.start > MAX_COMPARE_BYTES || bb.end - bb.start > MAX_COMPARE_BYTES) return toast("Too large to compare here (over 8 MB each)", 3500);
+  const label = (idx) => `${idx + 1}. ${pane.pickBoxes[idx]?.closest("li")?.querySelector(".cmd-text")?.textContent ?? "command"}`;
+  try {
+    const [ta, tb] = await Promise.all([ba, bb].map((b) => invoke("read_block", { session: b.session, start: b.start, end: b.end })));
+    openDialog("Compare two commands", (body) => renderCompare(body, ta, tb, label(i), label(j)));
+    document.querySelector("#dialog-host .dialog")?.classList.add("wide");
+  } catch (e) { toast(String(e), 3500); }
+}
+$("compare-selected").onclick = () => activePane && compareSelected(activePane);
 $("analyze-selected").onclick = () => activePane && analyzeSelected(activePane);
 $("clear-selected").onclick = () => {
   if (!activePane) return;
