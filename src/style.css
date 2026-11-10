@@ -287,3 +287,8 @@ table.dict td:not(:first-child):hover { background: var(--hover); }
 .cmp-cell.gap { background: var(--bg3); }
 .cmp-cell.cur { outline: 1px solid var(--focus); }
 .cmp-more { grid-column: 1 / -1; padding: 6px; opacity: 0.7; }
+.cmp-s { flex: 0 0 1em; text-align: center; font-weight: 700; user-select: none; }
+.cmp-cell[data-side="l"] .w { background: rgba(255, 80, 80, 0.4); border-radius: 2px; }
+.cmp-cell[data-side="r"] .w { background: rgba(60, 200, 90, 0.4); border-radius: 2px; }
+.cmp-cell.del .cmp-s, .cmp-cell.chg[data-side="l"] .cmp-s { color: var(--err-fg); }
+.cmp-cell.add .cmp-s, .cmp-cell.chg[data-side="r"] .cmp-s { color: var(--ok); }

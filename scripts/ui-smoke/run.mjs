@@ -628,6 +628,10 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(diffLines(["12:00:01 up", "z"], ["13:45:09 up", "z"], key).rows.every((r) => r.k === "same"), "lines differing only in time count as equal");
   check(diffLines(["a", "b"], ["a"]).rows.map((r) => r.k).join() === "same,del", "a removed line shows as del");
   check(diffLines([], []).rows.length === 0, "empty inputs compare fine");
+  const { wordDiff } = await import("../../src/compare.js");
+  const wd = wordDiff("took 12:00:01 to copy file a", "took 13:30:00 to copy file b");
+  check(wd.l.filter(([, c]) => c).map(([t]) => t).join("") === "a" && wd.r.filter(([, c]) => c).map(([t]) => t).join("") === "b", "word view marks only the words that differ (times ignored)");
+  check(wordDiff("x".repeat(600).split("").join(" "), "y".repeat(600).split("").join(" ")) === null, "word view is skipped for huge lines");
   // UI: tick two commands; Compare appears and opens the side-by-side view
   const visiblePicks = () => [...document.querySelectorAll("#block-lists input.pick")].filter((x) => !x.closest("[hidden]"));
   const spawnId = globalThis.__calls.filter(([c]) => c === "pty_spawn").length;

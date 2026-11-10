@@ -70,6 +70,27 @@ export function diffLines(a, b, key = (x) => x) {
   return { rows, tooBig: false };
 }
 
+// A line split into pieces for the word-level view: dates, times and ids stay whole when they are being ignored.
+function tokens(line, times) {
+  const src = (times ? [...TIME, ...ID].map((r) => r.source + "|") : []).join("");
+  return line.match(new RegExp(src + "\\w+|\\s+|[^\\w\\s]", "gi")) ?? [];
+}
+
+// Which pieces of a changed line pair differ: { l: [[text, changed]], r: [[text, changed]] }, or null for very long lines.
+export function wordDiff(left, right, opts = { times: true, numbers: false }) {
+  const ta = tokens(left, opts.times), tb = tokens(right, opts.times);
+  if (ta.length * tb.length > 250_000) return null;
+  const { rows, tooBig } = diffLines(ta, tb, (x) => normalizeLine(x, opts));
+  if (tooBig) return null;
+  const l = [], r = [];
+  for (const row of rows) {
+    if (row.k === "same") { l.push([row.l, false]); r.push([row.r, false]); continue; }
+    if (row.l !== undefined) l.push([row.l, true]);
+    if (row.r !== undefined) r.push([row.r, true]);
+  }
+  return { l, r };
+}
+
 const MAX_ROWS = 3000;
 
 // Fills `body` with the comparison of two texts. Built with textContent only.
@@ -102,13 +123,21 @@ export function renderCompare(body, a, b, labelA, labelB) {
     const diffs = rows.filter((r) => r.k !== "same").length;
     summary.textContent = diffs ? `${diffs.toLocaleString()} differing rows` : "No differences";
     const shown = only.checked ? rows.filter((r) => r.k !== "same") : rows;
+    const opts = { times: times.checked, numbers: numbers.checked };
     for (const r of shown.slice(0, MAX_ROWS)) {
+      const words = r.k === "chg" ? wordDiff(r.l, r.r, opts) : null;
       for (const [side, text, n] of [["l", r.l, r.li], ["r", r.r, r.ri]]) {
         const cell = document.createElement("div");
         cell.className = `cmp-cell ${r.k}${r.k !== "same" && text === undefined ? " gap" : ""}${r.k === "same" ? "" : " diff"}`;
         cell.dataset.side = side;
         const num = Object.assign(document.createElement("span"), { className: "cmp-n", textContent: n === undefined ? "" : String(n + 1) });
-        cell.append(num, Object.assign(document.createElement("span"), { textContent: text ?? "" }));
+        const sign = Object.assign(document.createElement("span"), { className: "cmp-s", textContent: text === undefined || r.k === "same" ? "" : side === "l" ? "−" : "+" });
+        const line = document.createElement("span");
+        if (words) for (const [piece, changed] of words[side]) {
+          if (changed) line.append(Object.assign(document.createElement("span"), { className: "w", textContent: piece }));
+          else line.append(piece);
+        } else line.textContent = text ?? "";
+        cell.append(num, sign, line);
         grid.append(cell);
       }
     }
