@@ -115,11 +115,48 @@ struct Scanner {
     t0: Option<Instant>,
     next_id: u32,
     started: Option<(u32, u64, u64)>, // id, command start, output start of the newest command not yet reported
+    /// Secret of this session: the shell integration puts it in every marker (`133;C;TOKEN`, `133;D;EXIT;TOKEN`), and
+    /// markers without it are ignored. Without this, any program output (cat, curl, an ssh banner) could print fake
+    /// markers and pass itself off as a finished command. `None` accepts every marker (saved history, tests).
+    token: Option<String>,
+}
+
+/// A random secret for one shell session (24 hex characters).
+fn new_token() -> String {
+    let mut b = [0u8; 12];
+    #[cfg(unix)]
+    {
+        if let Ok(mut f) = File::open("/dev/urandom") {
+            let _ = f.read_exact(&mut b);
+        }
+    }
+    if b.iter().all(|&x| x == 0) {
+        // no /dev/urandom (Windows): std's hasher is seeded randomly by the system
+        use std::hash::BuildHasher;
+        let rs = std::collections::hash_map::RandomState::new();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        b[..8].copy_from_slice(&rs.hash_one(nanos).to_le_bytes());
+        b[8..].copy_from_slice(&rs.hash_one(std::process::id()).to_le_bytes()[..4]);
+    }
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 impl Scanner {
     fn new() -> Self {
-        Scanner { st: St::Normal, esc_pos: 0, osc: Vec::new(), cur: None, b_pos: None, t0: None, next_id: 1, started: None }
+        Scanner { st: St::Normal, esc_pos: 0, osc: Vec::new(), cur: None, b_pos: None, t0: None, next_id: 1, started: None, token: None }
+    }
+
+    fn with_token(token: String) -> Self {
+        Scanner { token: Some(token), ..Scanner::new() }
+    }
+
+    /// True when a marker (the bytes after `133;`) carries this session's token, or no token is required.
+    fn marker_ok(&self, rest: &[u8]) -> bool {
+        let Some(t) = &self.token else { return true };
+        let fields: Vec<&[u8]> = rest.split(|&b| b == b';').collect();
+        // A;TOKEN  B;TOKEN  C;TOKEN  D;EXIT;TOKEN
+        let got = if rest.first() == Some(&b'D') { fields.get(2) } else { fields.get(1) };
+        got.map_or(false, |g| *g == t.as_bytes())
     }
 
     fn feed(&mut self, chunk: &[u8], base: u64, emit: &mut impl FnMut(Block)) {
@@ -175,6 +212,9 @@ impl Scanner {
 
     fn finish(&mut self, end_pos: u64, emit: &mut impl FnMut(Block)) {
         let Some(rest) = self.osc.strip_prefix(b"133;") else { return };
+        if !self.marker_ok(rest) {
+            return;
+        }
         match rest.first() {
             Some(b'B') => self.b_pos = Some(end_pos),
             Some(b'C') => {
@@ -186,8 +226,11 @@ impl Scanner {
             }
             Some(b'D') => {
                 if let Some((id, start, lines, cmd_start)) = self.cur.take() {
-                    let exit = std::str::from_utf8(rest.get(2..).unwrap_or(&[]))
-                        .ok()
+                    // `D;EXIT` or `D;EXIT;TOKEN`
+                    let exit = rest
+                        .get(2..)
+                        .and_then(|r| r.split(|&b| b == b';').next())
+                        .and_then(|r| std::str::from_utf8(r).ok())
                         .and_then(|s| s.parse().ok());
                     let ms = self.t0.take().map_or(0, |t| t.elapsed().as_millis() as u64);
                     emit(Block { session: 0, id, cmd_start, start, end: self.esc_pos, lines, exit, ms });
@@ -199,12 +242,13 @@ impl Scanner {
 }
 
 /// Writes the integration script for known shells and returns the command to launch.
-fn shell_command(shell: &str, dir: &Path) -> Result<CommandBuilder, String> {
+fn shell_command(shell: &str, dir: &Path, token: &str) -> Result<CommandBuilder, String> {
     let name = Path::new(shell).file_name().and_then(|s| s.to_str()).unwrap_or("");
     let mut cmd = CommandBuilder::new(shell);
     cmd.env("TERM", "xterm-256color");
     match name {
         "bash" => {
+            cmd.env("DIGTERM_MARK", token); // read once by the script, which then removes it from the environment
             let rc = dir.join("integration.bash");
             fs::write(&rc, include_str!("../shell/integration.bash")).map_err(|e| e.to_string())?;
             cmd.arg("--rcfile");
@@ -212,6 +256,7 @@ fn shell_command(shell: &str, dir: &Path) -> Result<CommandBuilder, String> {
             cmd.arg("-i");
         }
         "zsh" => {
+            cmd.env("DIGTERM_MARK", token);
             let zdir = dir.join("zsh");
             fs::create_dir_all(&zdir).map_err(|e| e.to_string())?;
             fs::write(zdir.join(".zshrc"), include_str!("../shell/integration.zsh"))
@@ -266,7 +311,8 @@ fn pty_spawn(
             "/bin/sh".into()
         }
     });
-    let mut cmd = shell_command(&shell, &shell_dir)?;
+    let token = new_token();
+    let mut cmd = shell_command(&shell, &shell_dir, &token)?;
     let start_dir = cwd.filter(|d| Path::new(d).is_dir()).or_else(home_dir);
     if let Some(dir) = start_dir {
         cmd.cwd(dir);
@@ -306,7 +352,7 @@ fn pty_spawn(
         let mut buf = [0u8; 16384];
         let mut offset: u64 = 0;
         let mut lines: u64 = 0;
-        let mut scanner = Scanner::new();
+        let mut scanner = Scanner::with_token(token);
         let mut last_emit = Instant::now();
         loop {
             match reader.read(&mut buf) {
@@ -1839,6 +1885,31 @@ mod tests {
         assert_eq!(lines, 2);
         assert_eq!(&data[start as usize..end as usize], b"a\nb\n");
         assert_eq!(&data[cmd_start as usize..start as usize - C.len()], b"ls\r\n");
+    }
+
+    #[test]
+    fn scanner_with_a_token_ignores_forged_markers() {
+        let mut sc = Scanner::with_token("tok123".into());
+        // output that tries to pass itself off as a command: no token, then a wrong token
+        let forged = cat(&[
+            b"\x1b]133;B\x07", b"dir ;evil", b"\x1b]133;C\x07", b"out\n", b"\x1b]133;D;127\x07",
+            b"\x1b]133;C;wrong\x07", b"\x1b]133;D;5;wrong\x07",
+        ]);
+        let mut got: Vec<Option<i32>> = Vec::new();
+        sc.feed(&forged, 0, &mut |b| got.push(b.exit));
+        assert!(got.is_empty(), "forged markers finish nothing");
+        assert_eq!(sc.take_started(), None, "and start nothing");
+        let real = cat(&[b"\x1b]133;B;tok123\x07", b"ls\r\n", b"\x1b]133;C;tok123\x07", b"x\n", b"\x1b]133;D;3;tok123\x07"]);
+        sc.feed(&real, forged.len() as u64, &mut |b| got.push(b.exit));
+        assert_eq!(got, vec![Some(3)], "markers with the right token work and the exit code is read");
+    }
+
+    #[test]
+    fn new_token_is_random_hex() {
+        let (a, b) = (new_token(), new_token());
+        assert_eq!(a.len(), 24);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
     }
 
     #[test]
