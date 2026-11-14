@@ -291,10 +291,11 @@ fn pty_spawn(
     });
 
     let runs_dir = data_dir.join("runs");
-    fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
+    create_private_dir(&data_dir).map_err(|e| e.to_string())?;
+    create_private_dir(&runs_dir).map_err(|e| e.to_string())?;
     let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let path = runs_dir.join(format!("run-{ts}-{id}.raw"));
-    let mut file = File::create(&path).map_err(|e| e.to_string())?;
+    let mut file = create_private(&path, true).map_err(|e| e.to_string())?;
 
     state.sessions.lock().unwrap().insert(
         id,
@@ -465,7 +466,12 @@ fn path_info(cwd: Option<String>, names: Vec<String>) -> Vec<PathInfo> {
                 return none();
             };
             let full = fs::canonicalize(&full).unwrap_or(full);
-            PathInfo { kind, path: full.to_string_lossy().into_owned(), safe }
+            let shown = full.to_string_lossy().into_owned();
+            // a real name with control characters (Ctrl+C, Enter...) would act as keystrokes if typed into the shell
+            if shown.chars().any(|c| c.is_control()) {
+                return none();
+            }
+            PathInfo { kind, path: shown, safe }
         })
         .collect()
 }
@@ -709,8 +715,14 @@ fn write_text_checked(path: &Path, text: &str, stamp: &str) -> Result<String, St
         return Err("The file changed on disk since you opened it, so nothing was saved. Copy your text, close the viewer and open the file again.".into());
     }
     let dir = path.parent().ok_or("The file has no folder.")?;
-    let tmp = dir.join(format!(".digterm-save-{}.tmp", std::process::id()));
-    let result = fs::write(&tmp, text)
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    let tmp = dir.join(format!(".digterm-save-{}-{nanos}.tmp", std::process::id()));
+    // create_new: never write through a file or link that already has this name
+    let result = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
         .and_then(|_| fs::set_permissions(&tmp, meta.permissions()))
         .and_then(|_| fs::rename(&tmp, path));
     if let Err(e) = result {
@@ -735,14 +747,38 @@ async fn write_text_file(path: String, text: String, stamp: String) -> Result<St
 #[tauri::command]
 fn save_layout(app: AppHandle, json: String) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    fs::write(dir.join("layout.json"), json).map_err(|e| e.to_string())
+    create_private_dir(&dir).map_err(|e| e.to_string())?;
+    create_private(&dir.join("layout.json"), false)
+        .and_then(|mut f| f.write_all(json.as_bytes()))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn load_layout(app: AppHandle) -> Result<Option<String>, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(fs::read_to_string(dir.join("layout.json")).ok())
+}
+
+/// A file only the current user can read (mode 0600 on Unix). `new` refuses to reuse an existing name.
+fn create_private(path: &Path, new: bool) -> std::io::Result<File> {
+    let mut o = fs::OpenOptions::new();
+    o.write(true);
+    if new {
+        o.create_new(true);
+    } else {
+        o.create(true).truncate(true);
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    o.open(path)
+}
+
+/// A folder only the current user can enter (mode 0700 on Unix).
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+    Ok(())
 }
 
 /// Saved output files (`run-*.raw`) as (path, size, age in seconds).
@@ -1070,9 +1106,9 @@ async fn analyze_open_ranges(state: State<'_, AppState>, session: u32, ranges: V
 #[tauri::command]
 async fn analyze_open_text(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<u64, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("imports");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    create_private_dir(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("last-paste.txt");
-    fs::write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
+    create_private(&path, false).and_then(|mut f| f.write_all(text.as_bytes())).map_err(|e| e.to_string())?;
     set_analysis(&state, path, 0, text.len() as u64)
 }
 
@@ -1712,8 +1748,10 @@ fn resolve_startup() {
         }
         Startup::Stdin => {
             let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-            let p = std::env::temp_dir().join(format!("digterm-pipe-{ts}-{}.txt", std::process::id()));
-            let Ok(mut f) = File::create(&p) else { return };
+            // XDG_RUNTIME_DIR is private to the user; the shared temp folder is only the fallback
+            let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
+            let p = dir.join(format!("digterm-pipe-{ts}-{}.txt", std::process::id()));
+            let Ok(mut f) = create_private(&p, true) else { return };
             // the viewer can open up to 1 GiB, so that is all that is kept
             let n = std::io::copy(&mut std::io::stdin().lock().take(1 << 30), &mut f).unwrap_or(0);
             if n == 0 {
@@ -2131,6 +2169,11 @@ mod tests {
         let info = path_info(cwd.clone(), vec!["a.log".into(), "color.log".into()]);
         assert!(info[0].safe && !info[1].safe && info[1].kind == "text", "a text file with escape codes is text but not safe to cat");
         assert!(path_info(None, vec!["relative".into()])[0].kind.is_empty());
+        #[cfg(unix)]
+        {
+            fs::write(base.join("a\u{3}b"), "x\n").unwrap();
+            assert_eq!(path_info(cwd.clone(), vec!["a\u{3}b".into()])[0].kind, "", "names with control characters are not offered");
+        }
         let _ = fs::remove_dir_all(&base);
     }
 

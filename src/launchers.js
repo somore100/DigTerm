@@ -28,7 +28,7 @@ export function normalize(l) {
     id: String(l.id || Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
     name,
     color: PALETTE.includes(l.color) ? l.color : PALETTE[0],
-    cwd: String(l.cwd ?? "").trim(),
+    cwd: /[\x00-\x1f\x7f]/.test(String(l.cwd ?? "")) ? "" : String(l.cwd ?? "").trim(),
     commands,
     where: WHERE.some(([v]) => v === l.where) ? l.where : "tab",
   };

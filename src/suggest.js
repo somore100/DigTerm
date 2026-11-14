@@ -34,7 +34,16 @@ export function distance(a, b) {
 export const LEVELS = { high: 0.85, medium: 0.7, low: 0.55 };
 
 // -> { fixed, kind: "translate" | "typo", confidence: 0..1, safe } or null
+// shell syntax that chains or redirects commands: the rest of a line with these is never run by a guess
+const RISKY = /[;&|`$<>(){}\\\n\r]/;
+
 export function suggest(cmdLine, win = false, known = KNOWN) {
+  if (/[\x00-\x1f\x7f]/.test(cmdLine)) return null; // the text of a command can be forged by program output: nothing odd is ever typed back
+  const r = suggestWord(cmdLine, win, known);
+  return r && { ...r, risky: RISKY.test(cmdLine), safe: r.safe && !RISKY.test(cmdLine) };
+}
+
+function suggestWord(cmdLine, win, known) {
   const m = /^(\s*)(\S+)([\s\S]*)$/.exec(cmdLine);
   if (!m) return null;
   const [, , word, rest] = m;

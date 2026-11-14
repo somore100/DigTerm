@@ -2,7 +2,8 @@
 
 // One command per line; blank lines and # comments are skipped.
 export function parseLines(text) {
-  return text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  // other control characters (a pasted Ctrl+C, escape codes) are dropped: they would act as keystrokes, not text
+  return text.split(/\r?\n/).map((l) => l.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").trim()).filter((l) => l && !l.startsWith("#"));
 }
 
 // Milliseconds until the queue starts. mode: "now" | "in" (value = minutes) | "at" (value = "HH:MM", today or tomorrow). null = invalid.

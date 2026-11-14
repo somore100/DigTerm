@@ -136,6 +136,7 @@ document.addEventListener("keyup", (e) => { if (e.key === "Control" || e.key ===
 window.addEventListener("blur", () => { ctrlHeld = false; });
 
 const IS_WIN = /Windows/i.test(navigator.userAgent);
+const CONTROL = /[\x00-\x1f\x7f]/; // typed into the shell, these would act as keystrokes (Ctrl+C, Enter...)
 const shellQuote = (p) => (IS_WIN ? `"${p}"` : `'${p.replaceAll("'", "'\\''")}'`);
 
 // strips quotes and the markers `ls -F` appends (/ * @ = |) from a word of terminal output
@@ -168,6 +169,7 @@ function openTarget(pane, info, action) {
   if (action === "viewer") return openAnalyze({ label: `File: ${basename(info.path)}`, importPath: info.path });
   if (action === "default") return void invoke("open_path", { path: info.path }).catch((e) => alert(String(e)));
   if (pane.id === null) return;
+  if (CONTROL.test(info.path)) return toast("That name contains control characters, so it is not typed into the shell", 3500);
   // "catv" shows control characters as ^X instead of letting them change the terminal's state
   const cmd = action === "cd" ? `cd -- ${shellQuote(info.path)}` : action === "catv" ? `cat -v -- ${shellQuote(info.path)}` : `${IS_WIN ? "type" : "cat --"} ${shellQuote(info.path)}`;
   invoke("pty_write", { id: pane.id, data: `\x15${IS_WIN ? cmd.replace("cd -- ", "cd ") : cmd}\r` }); // Ctrl+U clears what was typed
@@ -372,7 +374,7 @@ class Pane {
         done(words.flatMap((w, i) => (infos[i]?.kind ? [{
           range: { start: { x: w.x1, y }, end: { x: w.x2, y } },
           text: w.name,
-          activate: (e) => { if (e.ctrlKey || e.metaKey) openTarget(this, infos[i], { dir: "cd", text: "viewer", url: "browser" }[infos[i].kind] ?? "default"); },
+          activate: (e) => { if (e.ctrlKey || e.metaKey) openTarget(this, infos[i], { dir: "cd", text: "viewer", url: "browser" }[infos[i].kind] ?? "reveal"); },
         }] : [])));
       },
     });
@@ -593,7 +595,7 @@ class Pane {
     };
     const sure = s.confidence >= LEVELS[prefs.autoFixLevel] && b.id === this.doneId;
     const auto = prefs.autoFix === "aggressive" && s.safe && sure;
-    const prefill = prefs.autoFix === "prefill" && sure;
+    const prefill = prefs.autoFix === "prefill" && sure && !s.risky;
     const hint = document.createElement("span");
     hint.className = "fix-hint";
     const code = document.createElement("code");
@@ -1514,6 +1516,7 @@ async function runLauncher(l) {
   const old = launched.get(l.id);
   if (launcherBusy(l)) { selectTab(old.tab); focusPane(old); return; } // already running: show it
   const lines = parseLines(l.commands);
+  if (CONTROL.test(l.cwd)) return toast("The folder of this button contains control characters");
   const base = l.cwd || activePane?.cwd || undefined;
   let pane;
   if (l.where === "current") {

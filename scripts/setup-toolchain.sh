@@ -14,8 +14,14 @@ fi
 
 if [ ! -x "$TC/node/bin/node" ]; then
   base=https://nodejs.org/dist/latest-v22.x
-  file=$(curl -sf "$base/SHASUMS256.txt" | grep -o 'node-v[0-9.]*-linux-x64\.tar\.xz' | head -1)
-  curl -sf "$base/$file" | tar -xJ -C "$TC"
+  sums=$(curl -sf "$base/SHASUMS256.txt")
+  file=$(printf '%s\n' "$sums" | grep -o 'node-v[0-9.]*-linux-x64\.tar\.xz' | head -1)
+  want=$(printf '%s\n' "$sums" | awk -v f="$file" '$2 == f { print $1 }')
+  curl -sf "$base/$file" -o "$TC/$file"
+  # the download must match the published checksum before anything is unpacked
+  echo "$want  $TC/$file" | sha256sum -c - || { rm -f "$TC/$file"; echo "Node download does not match its checksum" >&2; exit 1; }
+  tar -xJ -C "$TC" -f "$TC/$file"
+  rm -f "$TC/$file"
   mv "$TC/${file%.tar.xz}" "$TC/node"
 fi
 

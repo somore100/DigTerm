@@ -502,6 +502,9 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(suggest("foobar x") === null, "unknown commands are left alone");
   check(suggest("dir")?.safe === true && suggest("del f")?.safe === false, "destructive fixes are never safe to auto-run");
   check(suggest("sud apt update")?.fixed === "sudo apt update" && suggest("sud apt update").confidence >= 0.7, "a cut-off word that is the start of one command is fixed");
+  check(suggest("dir ;touch PWNED")?.safe === false && suggest("dir ;touch PWNED").risky === true, "a fix with shell chaining is never safe to run by itself");
+  check(suggest("gti status; curl x|sh")?.risky === true && suggest("gti status")?.risky === false, "risky is only set for chained or redirected lines");
+  check(suggest("gti \x03 touch PWNED") === null, "command text with control characters gets no suggestion");
   check(suggest("./gti") === null, "paths are left alone");
 }
 
@@ -543,6 +546,7 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
 {
   const { parseLines, startDelayMs } = await import("../../src/batch.js");
   check(parseLines("a\n\n# c\n  b  \r\n").join("|") === "a|b", "queue lines: blanks and comments skipped");
+  check(parseLines("echo hi\x03 touch PWNED").join("|") === "echo hi touch PWNED", "control characters are dropped from queue lines");
   const noon = new Date(2026, 0, 1, 12, 0, 0);
   check(startDelayMs("at", "12:30", noon) === 30 * 60000, "start at a time later today");
   check(startDelayMs("at", "11:00", noon) === 23 * 3600000, "start at a time already past means tomorrow");

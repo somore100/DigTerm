@@ -73,7 +73,7 @@ export async function openAnalyze(block) {
   root.id = "analyze";
   root.innerHTML = `
     <div class="an-bar">
-      <strong>${block.label ?? `Command #${block.id}`}</strong>
+      <strong>${esc(String(block.label ?? `Command #${block.id}`))}</strong>
       <span class="an-count"></span>
       <input class="an-search" placeholder="Search (Enter = next, Shift+Enter = previous)" />
       <span class="an-matches"></span>
