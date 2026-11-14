@@ -16,6 +16,7 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run test:ui
+      - run: npm run test:mcp
 
   rust-tests:
     runs-on: ubuntu-22.04

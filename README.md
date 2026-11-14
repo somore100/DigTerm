@@ -113,6 +113,24 @@ open any command's output in a viewer built for very large outputs, or follow a 
 
 **Privacy:** everything stays on your machine. Nothing is uploaded, and no network access is needed.
 
+## AI access (read-only MCP server)
+
+Digterm ships a small [MCP](https://modelcontextprotocol.io) server so an AI assistant can look at what you ran. It is
+**read-only**: it lists, reads and searches the saved output in Digterm's data folder. It cannot run a command, write a
+file or use the network. Requires Node 18+.
+
+```bash
+node scripts/mcp/digterm-mcp.mjs
+```
+
+Add it to your client, for example Claude Code: `claude mcp add digterm -- node /path/to/DigTerm/scripts/mcp/digterm-mcp.mjs`.
+Tools: `list_runs`, `list_commands`, `read_output`, `search`. Things to know:
+
+- Saved output can contain secrets. The server hides common ones (private keys, tokens, `password=...`) but this is
+  best effort. Set `DIGTERM_MCP_REDACT=0` to turn it off, `DIGTERM_DATA=<folder>` to point at another data folder.
+- Output is wrapped with a note that it is data, but a model can still be fooled by text inside it. Only connect
+  assistants you trust with what is in your history.
+
 ## Keyboard shortcuts
 
 | Action | Default |

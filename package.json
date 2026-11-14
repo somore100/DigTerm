@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "tauri": "tauri",
-    "test:ui": "node scripts/ui-smoke/run.mjs"
+    "test:ui": "node scripts/ui-smoke/run.mjs",
+    "test:mcp": "node scripts/mcp/test.mjs",
+    "mcp": "node scripts/mcp/digterm-mcp.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
