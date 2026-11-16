@@ -10,6 +10,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze, finishFollow } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
 import { loadLaunchers, saveLaunchers, normalize, PALETTE, WHERE } from "./launchers.js";
+import { PRESETS, platformOf, presetCommands, presetAsButton } from "./presets.js";
 import { renderCompare } from "./compare.js";
 import { parseLines, startDelayMs } from "./batch.js";
 import { suggest, LEVELS } from "./suggest.js";
@@ -1604,6 +1605,38 @@ function showLauncherEditor(existing) {
   });
 }
 
+function showPresets() {
+  const platform = platformOf(navigator.userAgent);
+  openDialog("Presets: read-only checks", (body) => {
+    const note = Object.assign(document.createElement("div"), { className: "dim" });
+    note.textContent = "Each check only looks at the system. Nothing is changed, installed or deleted. Run opens a new tab; + Button keeps it as a colour button.";
+    body.append(note);
+    for (const p of PRESETS) {
+      const row = document.createElement("div");
+      row.className = "preset";
+      row.style.setProperty("--c", p.color);
+      const head = Object.assign(document.createElement("div"), { className: "preset-head" });
+      head.append(Object.assign(document.createElement("b"), { textContent: p.name }), Object.assign(document.createElement("span"), { textContent: p.why }));
+      const code = Object.assign(document.createElement("code"), { textContent: presetCommands(p, platform) });
+      const run = Object.assign(document.createElement("button"), { textContent: "Run" });
+      run.onclick = () => { closeDialog(); runLauncher(presetAsButton(p, platform)); };
+      const add = Object.assign(document.createElement("button"), { textContent: "+ Button" });
+      add.onclick = () => {
+        const l = normalize({ ...presetAsButton(p, platform), id: undefined });
+        if (!l || launchers.some((x) => x.name === l.name && x.commands === l.commands)) return toast("Already a button");
+        launchers = [...launchers, l];
+        saveLaunchers(launchers);
+        if (!prefs.buttonsShown) setButtonsShown(true); else renderLaunchers();
+        toast(`Added "${l.name}" to the colour buttons`);
+      };
+      const btns = Object.assign(document.createElement("div"), { className: "preset-btns" });
+      btns.append(run, add);
+      row.append(head, code, btns);
+      body.append(row);
+    }
+  });
+}
+
 function showShortcuts() {
   openDialog("Keyboard shortcuts", (body) => {
     const warn = document.createElement("div");
@@ -1878,6 +1911,7 @@ function renderMenu() {
   item("History of earlier sessions…", null, showHistory);
   item("Run commands one by one…", null, showBatchDialog);
   item((prefs.buttonsShown ? "✓ " : "") + "Colour buttons panel", null, () => setButtonsShown(!prefs.buttonsShown));
+  item("Presets (read-only checks)…", null, showPresets);
   item("Linux / Windows commands…", null, showCommandDictionary);
   sep();
   item("Fullscreen", "fullscreen", toggleFullscreen);

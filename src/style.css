@@ -292,3 +292,9 @@ table.dict td:not(:first-child):hover { background: var(--hover); }
 .cmp-cell[data-side="r"] .w { background: rgba(60, 200, 90, 0.4); border-radius: 2px; }
 .cmp-cell.del .cmp-s, .cmp-cell.chg[data-side="l"] .cmp-s { color: var(--err-fg); }
 .cmp-cell.add .cmp-s, .cmp-cell.chg[data-side="r"] .cmp-s { color: var(--ok); }
+
+.preset { border-left: 4px solid var(--c); background: var(--bg3); border-radius: 4px; padding: 8px 10px; margin-top: 8px; display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; }
+.preset-head { display: flex; flex-direction: column; gap: 2px; }
+.preset-head span { opacity: 0.75; font-size: 12px; }
+.preset code { grid-column: 1; font-size: 11px; opacity: 0.7; white-space: pre-wrap; word-break: break-all; }
+.preset-btns { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 6px; }

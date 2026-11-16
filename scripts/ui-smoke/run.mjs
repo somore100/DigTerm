@@ -600,6 +600,34 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(JSON.parse(w.localStorage.getItem("digterm.buttons") || "[]").length === 1, "buttons are saved");
 }
 
+// presets
+{
+  const { PRESETS, presetCommands, presetAsButton, platformOf } = await import("../../src/presets.js");
+  const { normalize } = await import("../../src/launchers.js");
+  check(platformOf("Mozilla (Windows NT 10)") === "win" && platformOf("(Macintosh)") === "mac" && platformOf("(X11; Linux)") === "linux", "platform comes from the user agent");
+  const bad = /(^|[\s;|&])(rm|mv|cp|dd|sudo|kill|chmod|chown|mkfs|shutdown|reboot|systemctl\s+(start|stop|restart|enable|disable)|Remove-|Stop-|Set-|New-|Restart-)\b|>/;
+  let allOk = true;
+  for (const p of PRESETS) for (const pl of ["linux", "mac", "win"]) {
+    const c = presetCommands(p, pl);
+    if (!c || bad.test(c.replace(/2>\/dev\/null/g, "")) || !normalize(presetAsButton(p, pl))) { allOk = false; console.log("  bad preset", p.id, pl); }
+  }
+  check(allOk, "every preset exists for every platform, is a valid button and holds no changing command");
+  document.getElementById("menu-btn").click();
+  [...menu.querySelectorAll("button")].find((b) => /^Presets/.test(b.textContent))?.click();
+  await wait(20);
+  const dlg = document.getElementById("dialog-host");
+  check(dlg.querySelectorAll(".preset").length === PRESETS.length, "the Presets dialog lists every check");
+  const nBtn = JSON.parse(w.localStorage.getItem("digterm.buttons") || "[]").length;
+  [...dlg.querySelectorAll(".preset button")].find((b) => b.textContent === "+ Button").click();
+  await wait(20);
+  check(JSON.parse(w.localStorage.getItem("digterm.buttons") || "[]").length === nBtn + 1, "+ Button saves it as a colour button");
+  const spawns0 = globalThis.__calls.filter(([c]) => c === "pty_spawn").length;
+  [...dlg.querySelectorAll(".preset button")].find((b) => b.textContent === "Run").click();
+  await wait(150);
+  check(globalThis.__calls.filter(([c]) => c === "pty_spawn").length === spawns0 + 1, "Run opens a new terminal");
+  check(globalThis.__calls.some(([c, a]) => c === "pty_write" && /df -h/.test(a.data)), "and runs the check");
+}
+
 // move a terminal / combine tabs
 {
   document.getElementById("new-tab").click();

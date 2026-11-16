@@ -224,7 +224,7 @@ Roughly in the order I plan to do them. Nothing here is promised, and the order 
 
 **Then**
 - Ctrl+click on `file:line` in the output to open it at that line.
-- Diagnostic command presets (read-only, documented, human-editable), with a clear explanation before anything needs elevated privileges.
+- Diagnostic command presets: seven read-only checks are in the menu ("Presets"). Still to come: editing them, and checks that need elevated privileges (with a clear explanation first).
 - New Window.
 
 **Platforms**
