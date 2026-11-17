@@ -50,8 +50,30 @@ export function shortenPaths(t, aliases) {
   });
 }
 
-// opts: { spaces, tokens, paths } booleans
-export function compactLine(t, opts, aliases) {
+// A leading timestamp such as 2026-11-17T19:16:05.0638102Z becomes 19:16:05.06 (the date is shown once in a note).
+// A time zone other than Z is kept. Lines that do not start with a timestamp are left alone.
+const TIME_RE = /^(\[?)(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:[.,](\d+))?(Z|[+-]\d{2}:?\d{2})?/;
+export function shortenTime(t, dropDate) {
+  const m = TIME_RE.exec(t);
+  if (!m) return t;
+  const frac = m[4] ? "." + m[4].slice(0, 2) : "";
+  const zone = m[5] && m[5] !== "Z" ? m[5] : "";
+  return m[1] + (dropDate ? m[3] : `${m[2]} ${m[3]}`) + frac + zone + t.slice(m[0].length);
+}
+
+// The different dates (YYYY-MM-DD) that leading timestamps in `lines` show, in order of appearance (at most 4).
+export function logDates(lines) {
+  const seen = [];
+  for (const l of lines) {
+    const m = TIME_RE.exec(l);
+    if (m && !seen.includes(m[2])) { seen.push(m[2]); if (seen.length > 3) break; }
+  }
+  return seen;
+}
+
+// opts: { spaces, tokens, paths, times } booleans; ctx.dropDate: leave the date out of timestamps
+export function compactLine(t, opts, aliases, ctx = {}) {
+  if (opts.times) t = shortenTime(t, !!ctx.dropDate);
   if (opts.paths) t = shortenPaths(t, aliases);
   if (opts.tokens) t = shortenTokens(t);
   if (opts.spaces) t = squeezeSpaces(t);

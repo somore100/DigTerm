@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { maskCopy, loadMask, saveMask, MASK_KINDS } from "./mask.js";
 import { copiedToast } from "./toast.js";
 import { showContextMenu } from "./ctxmenu.js";
-import { compactLine, pickAliases } from "./compact.js";
+import { compactLine, pickAliases, logDates } from "./compact.js";
 
 let ROW = 18;
 
@@ -94,6 +94,7 @@ export async function openAnalyze(block) {
       <label class="an-toggle" title="Show only each command's output, without the prompts and typed commands" hidden><input type="checkbox" class="an-hide-cmd" /> Hide commands</label>
       <label class="an-toggle"><input type="checkbox" class="an-hl-on" /> Highlight</label>
       <label class="an-toggle" title="Show long lines as indented sub-lines instead of scrolling sideways"><input type="checkbox" class="an-wrap" /> Wrap long lines</label>
+      <span class="an-seg" title="Raw: exactly what the program printed (no folding, no compact view). Formatted: your folding and compact settings."><button class="seg-raw">Raw</button><button class="seg-fmt sel">Formatted</button></span>
       <button class="an-hl-edit" title="Edit highlight words">Words…</button>
       <button class="an-patterns-btn" title="Group all lines by pattern">Patterns</button>
       <button class="an-compact-btn" title="Shorter display text: fewer spaces, shortened long words and folders (view only)">Compact…</button>
@@ -118,6 +119,7 @@ export async function openAnalyze(block) {
       <label class="an-toggle"><input type="checkbox" class="cp-spaces" /> Squeeze spaces</label>
       <label class="an-toggle"><input type="checkbox" class="cp-tokens" /> Shorten long words (hashes, ids)</label>
       <label class="an-toggle"><input type="checkbox" class="cp-paths" /> Shorten repeated folders</label>
+      <label class="an-toggle" title="2026-11-17T19:16:05.0638102Z becomes 19:16:05.06; the date is shown once below"><input type="checkbox" class="cp-times" /> Shorten timestamps</label>
       <button class="cp-best" title="Tries every folding mode and all compact options and applies what saves the most">Best compression</button>
       <button class="cp-off">Off</button>
       <span class="an-hint">view only · while on, copying gives the compact text and long lines do not wrap</span>
@@ -202,11 +204,15 @@ export async function openAnalyze(block) {
   let moving = Promise.resolve();
 
   // --- long lines are shown as sub-lines; rows then differ in height, tracked as "extras"
-  const cp = { spaces: false, tokens: false, paths: false }; // compact view options
+  const cp = { spaces: false, tokens: false, paths: false, times: false }; // compact view options
+  let raw = false; // Raw view: no folding and no compact view, exactly what the program printed
+  let dropDate = false; // timestamps lose their date when all of them show the same one
   let aliases = []; // folder tags, picked from the first lines when "Shorten repeated folders" is first used
   let sampleLines = null;
-  const compactOn = () => cp.spaces || cp.tokens || cp.paths;
-  const cz = (t) => (compactOn() ? compactLine(t, cp, aliases) : t);
+  const compactSet = () => cp.spaces || cp.tokens || cp.paths || cp.times; // chosen, even if Raw hides it
+  const compactOn = () => !raw && compactSet();
+  const folded = () => collapsed && !raw;
+  const cz = (t) => (compactOn() ? compactLine(t, cp, aliases, { dropDate }) : t);
   // --- hidden text: black blocks over chosen parts of lines (right-click > Hide). View only: the saved output is
   // untouched. Hidden characters become U+E000 in the displayed text (same length, so columns and wrapping stay valid);
   // they are drawn as black blocks and copy as "█".
@@ -257,7 +263,7 @@ export async function openAnalyze(block) {
   let viewTotal = total;
 
   function rebuild() {
-    eff = collapsed ? groups.filter((g) => !expanded.has(g.first)) : [];
+    eff = folded() ? groups.filter((g) => !expanded.has(g.first)) : [];
     cum = [];
     vstart = [];
     let removed = 0;
@@ -268,11 +274,11 @@ export async function openAnalyze(block) {
     }
     viewTotal = total - removed;
     rebuildExtras();
-    countEl.textContent = collapsed
+    countEl.textContent = folded()
       ? `${total.toLocaleString()} lines · ${viewTotal.toLocaleString()} after collapsing`
       : `${total.toLocaleString()} lines`;
-    const how = [collapsed && "collapsed", compactOn() && "compact"].filter(Boolean).join(", ");
-    copyAllEl.textContent = how ? `Copy all (${how})` : "Copy all";
+    const how = [folded() && "collapsed", compactOn() && "compact"].filter(Boolean).join(", ");
+    copyAllEl.textContent = how ? `Copy all (${how})` : raw && (collapsed || compactSet()) ? "Copy all (raw)" : "Copy all";
   }
 
   function computeWrapW() {
@@ -523,7 +529,7 @@ export async function openAnalyze(block) {
 
   async function tselText() {
     const { a, b } = tsel;
-    if (!collapsed) {
+    if (!folded()) {
       const lines = (await textFor(a.v, b.v + 1)).split("\n");
       if (a.v === b.v) return lines[0].slice(a.col, b.col);
       lines[0] = lines[0].slice(a.col);
@@ -857,27 +863,49 @@ export async function openAnalyze(block) {
   // --- compact view
   const cpPanel = root.querySelector(".an-compact-panel");
   const cpInfo = root.querySelector(".cp-info");
-  const cpBoxes = { spaces: root.querySelector(".cp-spaces"), tokens: root.querySelector(".cp-tokens"), paths: root.querySelector(".cp-paths") };
+  const cpBoxes = { spaces: root.querySelector(".cp-spaces"), tokens: root.querySelector(".cp-tokens"), paths: root.querySelector(".cp-paths"), times: root.querySelector(".cp-times") };
   let bestNote = "";
+  let dateNote = "";
   async function loadAliases() {
     if (sampleLines) return;
     sampleLines = await invoke("analyze_lines", { from: 0, count: Math.min(total, 20000) });
     aliases = pickAliases(sampleLines);
+    const dates = logDates(sampleLines);
+    dropDate = dates.length === 1;
+    dateNote = dropDate ? `Dates left out of the timestamps: ${dates[0]}` : "";
   }
   async function applyCompact() {
-    if (cp.paths) await loadAliases();
+    if (cp.paths || cp.times) await loadAliases();
     cache.clear();
     tsel = null;
     tpos = null;
     wrapEl.disabled = compactOn();
     wrapEl.title = compactOn() ? "Wrapping is off while the compact view is on" : "Show long lines as indented sub-lines instead of scrolling sideways";
     const legend = cp.paths && aliases.length ? aliases.map((a) => `${a.tag} = ${a.prefix}`).join("   ") : "";
-    cpInfo.textContent = [bestNote, legend].filter(Boolean).join("\n");
+    cpInfo.textContent = [bestNote, cp.times ? dateNote : "", legend].filter(Boolean).join("\n");
     relayoutWrap();
   }
   for (const k of Object.keys(cpBoxes)) {
     cpBoxes[k].onchange = () => { cp[k] = cpBoxes[k].checked; bestNote = ""; applyCompact(); };
   }
+  // Raw / Formatted switch: Raw shows exactly what the program printed; the folding and compact choices are kept for Formatted.
+  const segRaw = root.querySelector(".seg-raw"), segFmt = root.querySelector(".seg-fmt");
+  function setRaw(on) {
+    if (raw === on) return;
+    raw = on;
+    segRaw.classList.toggle("sel", raw);
+    segFmt.classList.toggle("sel", !raw);
+    root.classList.toggle("is-raw", raw);
+    cache.clear();
+    tsel = null;
+    tpos = null;
+    wrapEl.disabled = compactOn();
+    wrapEl.title = compactOn() ? "Wrapping is off while the compact view is on" : "Show long lines as indented sub-lines instead of scrolling sideways";
+    if (wrapEff() && !lens) invoke("analyze_lengths").then((l) => { lens = new Uint32Array(l); relayoutWrap(); }).catch(() => {});
+    relayoutWrap();
+  }
+  segRaw.onclick = () => setRaw(true);
+  segFmt.onclick = () => setRaw(false);
   root.querySelector(".an-compact-btn").onclick = () => { cpPanel.hidden = !cpPanel.hidden; };
   root.querySelector(".cp-off").onclick = () => {
     for (const k of Object.keys(cp)) { cp[k] = false; cpBoxes[k].checked = false; }
@@ -895,9 +923,9 @@ export async function openAnalyze(block) {
       let all = 0;
       for (let i = 0; i < total; i++) all += lens[i] + 1;
       await loadAliases();
-      const all3 = { spaces: true, tokens: true, paths: true };
+      const all3 = { spaces: true, tokens: true, paths: true, times: true };
       let before = 0, after = 0;
-      for (const l of sampleLines) { before += l.length + 1; after += compactLine(l, all3, aliases).length + 1; }
+      for (const l of sampleLines) { before += l.length + 1; after += compactLine(l, all3, aliases, { dropDate }).length + 1; }
       const ratio = before ? after / before : 1;
       let bestMode = "off", bestSize = all;
       for (const mode of ["exact", "numbers", "fields", "blocks", "blocks-numbers"]) {
@@ -1005,10 +1033,10 @@ export async function openAnalyze(block) {
     if (native) items.push(["Copy selection", () => copyText(btn, async () => native)]);
     else if (tsel) items.push(["Copy selection", () => copyText(btn, tselText)]);
     else if (sel) items.push(["Copy selection", () => copyText(btn, () => textFor(sel[0], sel[1] + 1))]);
-    items.push([collapsed ? "Copy all (collapsed)" : "Copy all", () => copyText(copyAllEl, () => (collapsed ? collapsedText() : textFor(0, total)))]);
+    items.push([folded() ? "Copy all (collapsed)" : raw ? "Copy all (raw)" : "Copy all", () => copyText(copyAllEl, () => (folded() ? collapsedText() : textFor(0, total)))]);
     showContextMenu(e.clientX, e.clientY, items);
   });
-  copyAllEl.onclick = (e) => copyText(e.target, () => (collapsed ? collapsedText() : textFor(0, total)));
+  copyAllEl.onclick = (e) => copyText(e.target, () => (folded() ? collapsedText() : textFor(0, total)));
 
   function refreshHighlight() {
     settings.on = hlOn.checked;

@@ -352,6 +352,33 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
     check(viewer.querySelector(".an-rows").textContent.includes("a      b    c"), "turning compact off restores the text");
   }
   if (viewer) {
+    // timestamps and the Raw / Formatted switch
+    const { shortenTime, logDates } = await import("../../src/compact.js");
+    check(shortenTime("2026-11-17T19:16:05.0638102Z [DEBUG]: x", true) === "19:16:05.06 [DEBUG]: x", "timestamp loses date, zone letter and extra digits");
+    check(shortenTime("2026-11-17 19:16:05 x", false) === "2026-11-17 19:16:05 x" && shortenTime("[2026-11-17T19:16:05+02:00] y", true) === "[19:16:05+02:00] y" && shortenTime("no time here", true) === "no time here", "timestamp rules: date kept on request, bracket and offset kept, other lines untouched");
+    check(logDates(["2026-11-17T01:00:00Z a", "x", "2026-11-18T01:00:00Z b", "2026-11-17T02:00:00Z c"]).join() === "2026-11-17,2026-11-18", "log dates are listed once, in order");
+    globalThis.__lines = ["2026-11-17T19:16:05.0638102Z [DEBUG]: one", "2026-11-17T19:16:06.1111111Z [DEBUG]: two"];
+    const tbox = viewer.querySelector(".cp-times");
+    tbox.checked = true;
+    tbox.dispatchEvent(new w.Event("change"));
+    await wait(40);
+    check(viewer.querySelector(".an-rows").textContent.includes("19:16:05.06 [DEBUG]: one") && !viewer.querySelector(".an-rows").textContent.includes("2026-11-17T"), "Shorten timestamps changes the rows");
+    check(/2026-11-17/.test(viewer.querySelector(".cp-info").textContent), "the left-out date is shown once in a note");
+    viewer.querySelector(".seg-raw").click();
+    await wait(30);
+    check(viewer.querySelector(".an-rows").textContent.includes("2026-11-17T19:16:05.0638102Z") && viewer.classList.contains("is-raw"), "Raw shows the original text");
+    check(/raw/.test(viewer.querySelector(".an-copy-all").textContent), "the copy button says it copies raw");
+    viewer.querySelector(".an-copy-all").click();
+    await wait(30);
+    check(copied?.startsWith("2026-11-17T19:16:05.0638102Z [DEBUG]: one\n"), `raw copy gives the original text: got ${JSON.stringify(copied)}`);
+    viewer.querySelector(".seg-fmt").click();
+    await wait(30);
+    check(viewer.querySelector(".an-rows").textContent.includes("19:16:05.06 [DEBUG]: one"), "Formatted brings the compact view back");
+    viewer.querySelector(".cp-off").click();
+    await wait(30);
+    globalThis.__lines = null;
+  }
+  if (viewer) {
     // folded view: "Copy all" gives the folded text, not every line
     globalThis.__lines = null;
     globalThis.__groups = [{ first: 0, count: 10, summary: "⟲ 2-line block × 5: x …" }];
