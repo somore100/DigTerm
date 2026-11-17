@@ -600,6 +600,44 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(JSON.parse(w.localStorage.getItem("digterm.buttons") || "[]").length === 1, "buttons are saved");
 }
 
+// output triggers
+{
+  const T = await import("../../src/triggers.js");
+  const t1 = T.normalizeTrigger({ text: "error" });
+  const enc = (x) => new TextEncoder().encode(x);
+  let wt = new T.Watcher(() => [t1]);
+  check(wt.feed(enc("all fine\r\nBuild ERROR in x\r\n")).length === 1, "a trigger matches a line, ignoring case");
+  check(wt.feed(enc("another error\n"), Date.now()).length === 0, "the same trigger waits a few seconds before firing again");
+  wt = new T.Watcher(() => [t1]);
+  check(wt.feed(enc("an err")).length === 0 && wt.feed(enc("or here\n")).length === 1, "a line split over two chunks still matches");
+  wt = new T.Watcher(() => [t1]);
+  check(wt.feed(enc("\x1b[31merr\x1b[0mor\n")).length === 1, "colour codes do not hide a match");
+  wt = new T.Watcher(() => [t1]);
+  check(wt.feed(enc("no newline error")).length === 0, "a line that is not finished yet is not matched");
+  check(T.normalizeTrigger({ text: "(a+)+$", regex: true }) === null && T.normalizeTrigger({ text: "(", regex: true }) === null && T.normalizeTrigger({ text: "  " }) === null, "unsafe or empty patterns are refused");
+  check(T.normalizeTrigger({ text: "a\x1bb" }) === null, "control characters are refused");
+  wt = new T.Watcher(() => [T.normalizeTrigger({ text: "^done \\d+$", regex: true }), T.normalizeTrigger({ text: "Case", caseless: false })]);
+  check(wt.feed(enc("done 42\ncase\nCase\n")).length === 2, "regex and match-case work");
+  // UI
+  document.getElementById("menu-btn").click();
+  [...menu.querySelectorAll("button")].find((b) => /^Output triggers/.test(b.textContent))?.click();
+  await wait(20);
+  const dlg = document.getElementById("dialog-host");
+  dlg.querySelector("input[placeholder^='Text to watch']").value = "Listening on";
+  [...dlg.querySelectorAll("button")].find((b) => b.textContent === "Add").click();
+  await wait(20);
+  check(dlg.querySelectorAll(".trigger").length === 1 && JSON.parse(w.localStorage.getItem("digterm.triggers") || "[]").length === 1, "adding a trigger lists and saves it");
+  document.querySelector("#dialog-host button.close, #dialog-host .dialog-close")?.click();
+  const sid = globalThis.__calls.filter(([c]) => c === "pty_spawn").length;
+  const push = (x) => globalThis.__channels[sid - 1].onmessage(Array.from(enc(x)));
+  push("Listening on 3000\r\n");
+  check(!document.querySelector(".toast.show")?.textContent.includes("Listening on"), "output while no command runs does not fire (typed text is not matched)");
+  await globalThis.__events["pty-block-start"]({ payload: { session: sid, id: 900, cmd_start: 1, start: 2 } });
+  push("Listening on 3000\r\n");
+  check(/Trigger "Listening on": Listening on 3000/.test(document.querySelector(".toast")?.textContent ?? ""), "output of a running command fires the trigger with a message");
+  await globalThis.__events["pty-block"]({ payload: { session: sid, id: 900, cmd_start: 1, start: 2, end: 3, lines: 1, exit: 0, ms: 5 } });
+}
+
 // presets
 {
   const { PRESETS, presetCommands, presetAsButton, platformOf } = await import("../../src/presets.js");

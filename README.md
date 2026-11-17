@@ -223,6 +223,7 @@ Roughly in the order I plan to do them. Nothing here is promised, and the order 
 - Step through a pattern's lines with ▲ ▼ buttons, and group by words and ids as well as numbers.
 
 **Then**
+- Output triggers: more actions beyond notify (highlight the command; run a saved button after confirmation).
 - Ctrl+click on `file:line` in the output to open it at that line.
 - Diagnostic command presets: seven read-only checks are in the menu ("Presets"). Still to come: editing them, and checks that need elevated privileges (with a clear explanation first).
 - New Window.

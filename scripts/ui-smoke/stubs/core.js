@@ -1,4 +1,5 @@
-export class Channel { constructor() { this.onmessage = null; } }
+export const channels = (globalThis.__channels = []); // one per terminal, so tests can push output in
+export class Channel { constructor() { this.onmessage = null; channels.push(this); } }
 let n = 0;
 export const calls = (globalThis.__calls = []); // every invoke, so tests can check what the UI asked the backend to do
 export async function invoke(cmd, args) {

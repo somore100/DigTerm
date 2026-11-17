@@ -10,6 +10,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze, finishFollow } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
 import { loadLaunchers, saveLaunchers, normalize, PALETTE, WHERE } from "./launchers.js";
+import { loadTriggers, saveTriggers, normalizeTrigger, Watcher } from "./triggers.js";
 import { PRESETS, platformOf, presetCommands, presetAsButton } from "./presets.js";
 import { renderCompare } from "./compare.js";
 import { parseLines, startDelayMs } from "./batch.js";
@@ -187,6 +188,8 @@ class Pane {
     this.lines = 0;
     this.blocks = []; // finished commands, in order
     this.hides = []; // {marker, deco, x0, x1}: black overlay cells over hidden text (right-click > Hide selection)
+    this.watcher = new Watcher(() => triggers);
+    this.alert = false; // a trigger fired while this terminal was out of sight
     this.running = null; // {li, timer, id}: the command that has started but not finished
     this.queue = null; // {lines, sent, stop, timer, started, bar}: commands waiting to run one after another
     this.doneId = 0; // id of the newest finished command
@@ -313,12 +316,26 @@ class Pane {
     else { this.search.clearDecorations?.(); this.term.focus(); }
   }
 
+  triggerFired({ trigger, line }) {
+    const away = document.hidden || activeTab !== this.tab;
+    toast(`Trigger "${trigger.text}": ${line}`, 6000);
+    if (away) {
+      this.alert = true;
+      renderTabBar();
+      try { if (document.hidden && Notification.permission === "granted") new Notification("Digterm", { body: `"${trigger.text}": ${line}` }); } catch {}
+    }
+  }
+
   async start() {
     // let the layout settle first, so the shell starts at its final size and doesn't redraw its prompt
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     try { this.fit.fit(); } catch {}
     const onData = new Channel();
-    onData.onmessage = (msg) => this.term.write(new Uint8Array(msg));
+    onData.onmessage = (msg) => {
+      const bytes = new Uint8Array(msg);
+      this.term.write(bytes);
+      if (this.running && triggers.length) for (const h of this.watcher.feed(bytes)) this.triggerFired(h); // only while a command runs, so typed text is not matched
+    };
     this.sent = { rows: this.term.rows, cols: this.term.cols };
     const info = await invoke("pty_spawn", {
       onData,
@@ -914,6 +931,7 @@ async function newTab(cwd, font) {
 
 function selectTab(tab) {
   activeTab = tab;
+  tab.panes.forEach((p) => { p.alert = false; });
   for (const t of tabs) t.el.classList.toggle("active", t === tab);
   renderTabBar(true);
   const pane = tab.last ?? tab.panes[0];
@@ -979,7 +997,7 @@ const tabTitle = (tab) => fmtPath(tab.panes[0]?.cwd, prefs.tabTitle);
 
 let lastBar = "";
 function renderTabBar(force = false) {
-  const sig = JSON.stringify(tabs.map((t) => [tabTitle(t), t === activeTab]));
+  const sig = JSON.stringify(tabs.map((t) => [tabTitle(t), t === activeTab, t.panes.some((p) => p.alert)]));
   if (!force && sig === lastBar) return;
   lastBar = sig;
   const host = $("tabs");
@@ -989,7 +1007,7 @@ function renderTabBar(force = false) {
     b.className = "tab-btn" + (tab === activeTab ? " active" : "");
     b.title = fmtPath(tab.panes[0]?.cwd, "full");
     const title = document.createElement("span");
-    title.textContent = tabTitle(tab);
+    title.textContent = (tab.panes.some((p) => p.alert) ? "● " : "") + tabTitle(tab);
     const x = document.createElement("button");
     x.textContent = "✕";
     x.onclick = (e) => { e.stopPropagation(); closeTab(tab); };
@@ -1507,6 +1525,7 @@ function showBatchDialog() {
 // ---------------------------------------------------------------- colour buttons
 
 let launchers = loadLaunchers();
+let triggers = loadTriggers();
 const launched = new Map(); // button id -> the Pane it started
 const launcherBusy = (l) => {
   const p = launched.get(l.id);
@@ -1634,6 +1653,48 @@ function showPresets() {
       row.append(head, code, btns);
       body.append(row);
     }
+  });
+}
+
+function showTriggers() {
+  openDialog("Output triggers", (body) => {
+    const note = Object.assign(document.createElement("div"), { className: "dim" });
+    note.textContent = "When a running command prints this text, Digterm tells you: a message, a ● on the tab if you are elsewhere, and a desktop notification if allowed. A trigger only notifies. It never runs anything.";
+    const list = document.createElement("div");
+    const warn = Object.assign(document.createElement("div"), { className: "warn" });
+    const render = () => {
+      list.replaceChildren();
+      for (const t of triggers) {
+        const row = document.createElement("div");
+        row.className = "trigger";
+        const on = Object.assign(document.createElement("input"), { type: "checkbox", checked: t.on, title: "On" });
+        on.onchange = () => { t.on = on.checked; saveTriggers(triggers); };
+        const label = Object.assign(document.createElement("span"), { textContent: t.text + (t.regex ? "  (regex)" : "") + (t.caseless ? "" : "  (case)") });
+        const del = Object.assign(document.createElement("button"), { textContent: "Delete" });
+        del.onclick = () => { triggers = triggers.filter((x) => x !== t); saveTriggers(triggers); render(); };
+        row.append(on, label, del);
+        list.append(row);
+      }
+      if (!triggers.length) list.append(Object.assign(document.createElement("div"), { className: "dim", textContent: "No triggers yet." }));
+    };
+    const text = Object.assign(document.createElement("input"), { placeholder: "Text to watch for (for example: error, finished, Listening on)" });
+    const rx = Object.assign(document.createElement("input"), { type: "checkbox" });
+    const cs = Object.assign(document.createElement("input"), { type: "checkbox" });
+    const add = Object.assign(document.createElement("button"), { textContent: "Add" });
+    add.onclick = () => {
+      const t = normalizeTrigger({ text: text.value, regex: rx.checked, caseless: !cs.checked });
+      if (!t) return void (warn.textContent = "Needs some text. A regular expression must be valid and not too complex.");
+      warn.textContent = "";
+      triggers = [...triggers, t];
+      saveTriggers(triggers);
+      text.value = "";
+      render();
+    };
+    text.onkeydown = (e) => { if (e.key === "Enter") add.click(); };
+    render();
+    body.append(note, list, opt("New trigger", text), opt("It is a regular expression", rx), opt("Match case", cs), warn, add);
+    try { if (typeof Notification !== "undefined" && Notification.permission === "default") Notification.requestPermission(); } catch {}
+    text.focus();
   });
 }
 
@@ -1912,6 +1973,7 @@ function renderMenu() {
   item("Run commands one by one…", null, showBatchDialog);
   item((prefs.buttonsShown ? "✓ " : "") + "Colour buttons panel", null, () => setButtonsShown(!prefs.buttonsShown));
   item("Presets (read-only checks)…", null, showPresets);
+  item("Output triggers…", null, showTriggers);
   item("Linux / Windows commands…", null, showCommandDictionary);
   sep();
   item("Fullscreen", "fullscreen", toggleFullscreen);
