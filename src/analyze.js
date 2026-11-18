@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { maskCopy, loadMask, saveMask, MASK_KINDS } from "./mask.js";
 import { copiedToast } from "./toast.js";
 import { showContextMenu } from "./ctxmenu.js";
-import { compactLine, pickAliases, logDates } from "./compact.js";
+import { renderMarkdown } from "./markdown.js";
+import { compactLine, pickAliases, logDates, groupByMinute } from "./compact.js";
 
 let ROW = 18;
 
@@ -120,13 +121,14 @@ export async function openAnalyze(block) {
       <label class="an-toggle"><input type="checkbox" class="cp-tokens" /> Shorten long words (hashes, ids)</label>
       <label class="an-toggle"><input type="checkbox" class="cp-paths" /> Shorten repeated folders</label>
       <label class="an-toggle" title="2026-11-17T19:16:05.0638102Z becomes 19:16:05.06; the date is shown once below"><input type="checkbox" class="cp-times" /> Shorten timestamps</label>
+      <label class="an-toggle cp-group-wrap" title="Print the time down to the minute once; the lines below it show only the seconds. Needs Shorten timestamps. Not used while lines are folded."><input type="checkbox" class="cp-group" /> Group lines by minute</label>
       <button class="cp-best" title="Tries every folding mode and all compact options and applies what saves the most">Best compression</button>
       <button class="cp-off">Off</button>
       <span class="an-hint">view only · while on, copying gives the compact text and long lines do not wrap</span>
       <div class="cp-info"></div>
     </div>
     <div class="an-mask-panel" hidden></div>
-    <div class="an-main"><div class="an-body"><div class="an-spacer"></div><div class="an-rows"></div></div><textarea class="an-editor" spellcheck="false" hidden></textarea><aside class="an-patterns" hidden></aside></div>`;
+    <div class="an-main"><div class="an-body"><div class="an-spacer"></div><div class="an-rows"></div></div><div class="an-md" hidden></div><textarea class="an-editor" spellcheck="false" hidden></textarea><aside class="an-patterns" hidden></aside></div>`;
   document.body.append(root);
 
   const settings = loadSettings();
@@ -213,6 +215,13 @@ export async function openAnalyze(block) {
   const compactOn = () => !raw && compactSet();
   const folded = () => collapsed && !raw;
   const cz = (t) => (compactOn() ? compactLine(t, cp, aliases, { dropDate }) : t);
+  let grp = false; // tree view by minute (needs cp.times)
+  // Text of consecutive lines `from`.. as shown. The tree view needs the line before them to know whether the minute changed.
+  async function czRange(from, lines) {
+    if (!(grp && cp.times && compactOn() && !folded())) return lines.map(cz);
+    const prev = from > 0 ? (await invoke("analyze_lines", { from: from - 1, count: 1 }))[0] ?? null : null;
+    return groupByMinute(lines, prev, cp, aliases, { dropDate });
+  }
   // --- hidden text: black blocks over chosen parts of lines (right-click > Hide). View only: the saved output is
   // untouched. Hidden characters become U+E000 in the displayed text (same length, so columns and wrapping stay valid);
   // they are drawn as black blocks and copy as "█".
@@ -369,7 +378,8 @@ export async function openAnalyze(block) {
 
   async function fetchLines(from, to) {
     const lines = await invoke("analyze_lines", { from, count: to - from });
-    lines.forEach((t, i) => cache.set(from + i, maskLine(from + i, cz(t))));
+    const shown = await czRange(from, lines);
+    shown.forEach((t, i) => cache.set(from + i, maskLine(from + i, t)));
   }
 
   async function render() {
@@ -554,7 +564,8 @@ export async function openAnalyze(block) {
   async function textFor(from, to) {
     const parts = [];
     for (let i = from; i < to; i += 20000) {
-      parts.push(...(await invoke("analyze_lines", { from: i, count: Math.min(20000, to - i) })).map((t, k) => maskLine(i + k, cz(t))));
+      const chunk = await invoke("analyze_lines", { from: i, count: Math.min(20000, to - i) });
+      parts.push(...(await czRange(i, chunk)).map((t, k) => maskLine(i + k, t)));
     }
     return parts.join("\n");
   }
@@ -814,11 +825,30 @@ export async function openAnalyze(block) {
       editWrap.title = "Log files are read-only: a program is usually still writing to them";
     }
   }
+  // Markdown files: Formatted shows the rendered text, Raw (and Edit) show the file as it is
+  const mdEl = root.querySelector(".an-md");
+  const isMd = !!block.importPath && block.importText === undefined && /\.(md|markdown)$/i.test(block.importPath);
+  let mdReady = false;
+  const mdOn = () => isMd && mdReady && !raw && !editing();
+  function syncMd() {
+    body.hidden = editing() || mdOn();
+    mdEl.hidden = !mdOn();
+  }
+  if (isMd) {
+    invoke("read_text_file", { path: block.importPath })
+      .then((f) => {
+        mdEl.replaceChildren(renderMarkdown(f.text, { openUrl: (url) => invoke("open_url", { url }).catch(() => {}) }));
+        mdReady = true;
+        syncMd();
+        matchesEl.textContent = "Showing formatted Markdown. Raw shows the file as it is.";
+      })
+      .catch(() => {}); // too big or unreadable: the plain rows stay
+  }
   function showEditing(on) {
-    body.hidden = on;
     editor.hidden = !on;
     saveBtn.hidden = !on;
     discardBtn.hidden = !on;
+    syncMd();
     if (on) editor.focus();
   }
   async function saveEdit() {
@@ -886,7 +916,7 @@ export async function openAnalyze(block) {
     relayoutWrap();
   }
   for (const k of Object.keys(cpBoxes)) {
-    cpBoxes[k].onchange = () => { cp[k] = cpBoxes[k].checked; bestNote = ""; applyCompact(); };
+    cpBoxes[k].onchange = () => { cp[k] = cpBoxes[k].checked; bestNote = ""; syncGrp(); applyCompact(); };
   }
   // Raw / Formatted switch: Raw shows exactly what the program printed; the folding and compact choices are kept for Formatted.
   const segRaw = root.querySelector(".seg-raw"), segFmt = root.querySelector(".seg-fmt");
@@ -896,6 +926,7 @@ export async function openAnalyze(block) {
     segRaw.classList.toggle("sel", raw);
     segFmt.classList.toggle("sel", !raw);
     root.classList.toggle("is-raw", raw);
+    syncMd();
     cache.clear();
     tsel = null;
     tpos = null;
@@ -907,7 +938,13 @@ export async function openAnalyze(block) {
   segRaw.onclick = () => setRaw(true);
   segFmt.onclick = () => setRaw(false);
   root.querySelector(".an-compact-btn").onclick = () => { cpPanel.hidden = !cpPanel.hidden; };
+  const grpBox = root.querySelector(".cp-group");
+  const syncGrp = () => { grpBox.disabled = !cp.times; if (!cp.times) { grp = false; grpBox.checked = false; } };
+  grpBox.onchange = () => { grp = grpBox.checked; bestNote = ""; applyCompact(); };
+  syncGrp();
   root.querySelector(".cp-off").onclick = () => {
+    grp = false;
+    grpBox.checked = false;
     for (const k of Object.keys(cp)) { cp[k] = false; cpBoxes[k].checked = false; }
     bestNote = "";
     applyCompact();
@@ -942,6 +979,7 @@ export async function openAnalyze(block) {
       const useCompact = ratio < 0.98;
       const est = Math.round((bestMode === "off" ? all : bestSize) * (useCompact ? ratio : 1));
       for (const k of Object.keys(cp)) { cp[k] = useCompact; cpBoxes[k].checked = useCompact; }
+      syncGrp();
       modeEl.value = bestMode;
       modeEl.dispatchEvent(new Event("change"));
       const name = modeEl.selectedOptions[0].textContent;

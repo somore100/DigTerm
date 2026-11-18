@@ -643,7 +643,10 @@ class Pane {
     const li = document.createElement("li");
     const label = document.createElement("span");
     label.className = b.exit === 0 ? "ok" : "fail";
-    label.textContent = `${b.lines.toLocaleString()} lines · ${formatDuration(b.ms)} · exit ${b.exit ?? "?"}`;
+    b.at = Date.now() - b.ms; // when the command started (earlier sessions are not listed here, so they have no time)
+    const when = new Date(b.at);
+    label.textContent = `${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })} · ${b.lines.toLocaleString()} lines · ${formatDuration(b.ms)} · exit ${b.exit ?? "?"}`;
+    label.title = `Started ${when.toLocaleString()}`;
     const cmdText = document.createElement("span");
     cmdText.className = "cmd-text";
     invoke("read_block", { session: b.session, start: b.cmd_start, end: b.start })
@@ -1436,8 +1439,19 @@ function showPasteDialog() {
     const mk = (text, fn) => Object.assign(document.createElement("button"), { className: "linkbtn", textContent: text, onclick: fn });
     const note = document.createElement("div");
     note.className = "note";
-    note.textContent = "You can also drop a log file onto the window. Nothing is uploaded; it stays on this computer.";
+    note.textContent = "Open file… takes files up to 20 MB. For bigger ones drop the file onto the window. Nothing is uploaded; it stays on this computer.";
+    const picker = Object.assign(document.createElement("input"), { type: "file", hidden: true });
+    picker.onchange = async () => {
+      const f = picker.files?.[0];
+      if (!f) return;
+      if (f.size > 20 * 1024 * 1024) { note.textContent = `${f.name} is ${(f.size / 1048576).toFixed(0)} MB: too big for this button. Drop it onto the window instead, which opens big files without loading them whole.`; return; }
+      let text;
+      try { text = await f.text(); } catch { note.textContent = "Could not read that file."; return; }
+      closeDialog();
+      openAnalyze({ label: `File: ${f.name}`, importText: text });
+    };
     row.append(
+      mk("Open file…", () => picker.click()),
       mk("Paste from clipboard", async () => { try { area.value = await navigator.clipboard.readText(); } catch {} }),
       mk("Analyze", () => {
         const text = area.value;
@@ -1446,7 +1460,7 @@ function showPasteDialog() {
         openAnalyze({ label: "Pasted text", importText: text });
       }),
     );
-    body.append(area, row, note);
+    body.append(area, row, note, picker);
     area.focus();
   });
 }

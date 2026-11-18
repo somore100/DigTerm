@@ -79,3 +79,32 @@ export function compactLine(t, opts, aliases, ctx = {}) {
   if (opts.spaces) t = squeezeSpaces(t);
   return t;
 }
+
+// Tree view by minute: the time down to the minute is printed once, on the first line of each minute; the lines under
+// it show only the seconds and are marked with a guide bar.
+//   19:16 │ :05.06 [DEBUG]: one
+//         │ :06.17 [DEBUG]: two
+// `raws` are consecutive original lines; `prevRaw` is the line before them (or null). Lines without a timestamp stay in
+// the current group. Needs the same options as compactLine; `ctx.dropDate` leaves the date out.
+export function groupByMinute(raws, prevRaw, opts, aliases, ctx = {}) {
+  const rest = { ...opts, times: false };
+  const key = (m) => `${m[2]} ${m[3].slice(0, 5)}`;
+  const pm = prevRaw === null ? null : TIME_RE.exec(prevRaw);
+  let cur = pm ? key(pm) : null;
+  const width = ctx.dropDate ? 5 : 16;
+  return raws.map((t) => {
+    const m = TIME_RE.exec(t);
+    let label = "", body;
+    if (m) {
+      const k = key(m);
+      if (k !== cur) label = ctx.dropDate ? m[3].slice(0, 5) : k;
+      cur = k;
+      const frac = m[4] ? "." + m[4].slice(0, 2) : "";
+      const zone = m[5] && m[5] !== "Z" ? m[5] : "";
+      body = m[1] + m[3].slice(5) + frac + zone + compactLine(t.slice(m[0].length), rest, aliases, ctx);
+    } else {
+      body = compactLine(t, rest, aliases, ctx);
+    }
+    return `${label.padEnd(width)} │ ${body}`;
+  });
+}

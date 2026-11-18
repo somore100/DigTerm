@@ -228,6 +228,26 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   v = viewerEl();
   check(v?.querySelector(".an-edit").disabled, "a .log file cannot be edited");
   v?.querySelector(".an-close").click();
+  // Markdown files are shown rendered in Formatted and as they are in Raw
+  await drop("/tmp/readme.md");
+  v = viewerEl();
+  const md = v?.querySelector(".an-md");
+  check(md && !md.hidden && v.querySelector(".an-body").hidden, "a .md file opens rendered");
+  check(md?.querySelector("h1")?.textContent === "Title" && md.querySelector("strong")?.textContent === "bold" && md.querySelector("li ul li")?.textContent === "nested", "headings, bold and nested lists are rendered");
+  check(md?.querySelector("table td")?.textContent === "1" && md.querySelector("pre code")?.textContent === "<b>code</b>" && !md.querySelector("b"), "tables and code render, and markup inside code stays text");
+  check(!md?.querySelector("img") && /\[image: pic\]/.test(md?.textContent ?? ""), "images are not loaded: only their text shows");
+  const lk = md?.querySelector("a.md-link");
+  check(lk && !lk.hasAttribute("href"), "links carry no href");
+  lk?.click();
+  await wait(10);
+  check(globalThis.__calls.some(([c, a]) => c === "open_url" && a.url === "https://example.com"), "clicking a link opens it in the browser");
+  v.querySelector(".seg-raw").click();
+  await wait(20);
+  check(md.hidden && !v.querySelector(".an-body").hidden, "Raw shows the file as it is");
+  v.querySelector(".seg-fmt").click();
+  await wait(20);
+  check(!md.hidden, "Formatted shows the rendering again");
+  v?.querySelector(".an-close").click();
 }
 
 // Hide: selected lines become black blocks in the rows and in copies, and can be shown again
@@ -294,6 +314,8 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   await globalThis.__events["pty-block-start"]({ payload: { session: sid, id: 50, cmd_start: 1000, start: 1010 } });
   check(items().length === before + 1, "a repeated start note does not add a second row");
   await globalThis.__events["pty-block"]({ payload: { session: sid, id: 50, cmd_start: 1000, start: 1010, end: 1040, lines: 3, exit: 0, ms: 1500 } });
+  const lab = [...document.querySelectorAll(".block-info .ok")].find((x) => /3 lines/.test(x.textContent));
+  check(lab && /^\d{1,2}[:.]\d{2}[:.]\d{2}/.test(lab.textContent.trim()) && /^Started /.test(lab.title), "a finished command shows when it started");
   check(!items().some((li) => li.classList.contains("running")) && items().length === before + 1, "the running row becomes the finished command");
   await globalThis.__events["pty-block-start"]({ payload: { session: sid, id: 50, cmd_start: 1000, start: 1010 } });
   check(!items().some((li) => li.classList.contains("running")), "a late start note for a finished command is ignored");
@@ -354,6 +376,9 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   if (viewer) {
     // timestamps and the Raw / Formatted switch
     const { shortenTime, logDates } = await import("../../src/compact.js");
+    const { groupByMinute } = await import("../../src/compact.js");
+    check(groupByMinute(["2026-11-17T19:16:05Z a", "cont", "2026-11-17T19:17:00Z b"], null, {}, [], { dropDate: true }).join("|") === "19:16 │ :05 a|      │ cont|19:17 │ :00 b", "tree view prints each minute once");
+    check(groupByMinute(["2026-11-17T19:16:06Z a"], "2026-11-17T19:16:00Z p", {}, [], { dropDate: true })[0].startsWith("      │"), "the minute of the line before decides whether to print it");
     check(shortenTime("2026-11-17T19:16:05.0638102Z [DEBUG]: x", true) === "19:16:05.06 [DEBUG]: x", "timestamp loses date, zone letter and extra digits");
     check(shortenTime("2026-11-17 19:16:05 x", false) === "2026-11-17 19:16:05 x" && shortenTime("[2026-11-17T19:16:05+02:00] y", true) === "[19:16:05+02:00] y" && shortenTime("no time here", true) === "no time here", "timestamp rules: date kept on request, bracket and offset kept, other lines untouched");
     check(logDates(["2026-11-17T01:00:00Z a", "x", "2026-11-18T01:00:00Z b", "2026-11-17T02:00:00Z c"]).join() === "2026-11-17,2026-11-18", "log dates are listed once, in order");
@@ -364,6 +389,16 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
     await wait(40);
     check(viewer.querySelector(".an-rows").textContent.includes("19:16:05.06 [DEBUG]: one") && !viewer.querySelector(".an-rows").textContent.includes("2026-11-17T"), "Shorten timestamps changes the rows");
     check(/2026-11-17/.test(viewer.querySelector(".cp-info").textContent), "the left-out date is shown once in a note");
+    const gbox = viewer.querySelector(".cp-group");
+    check(!gbox.disabled, "Group lines by minute is available once timestamps are shortened");
+    gbox.checked = true;
+    gbox.dispatchEvent(new w.Event("change"));
+    await wait(40);
+    const gtext = viewer.querySelector(".an-rows").textContent;
+    check(/19:16\s*│ :05\.06 \[DEBUG\]: one/.test(gtext) && /\s{5}│ :06\.11/.test(gtext), "grouped view shows the minute once, then only seconds");
+    gbox.checked = false;
+    gbox.dispatchEvent(new w.Event("change"));
+    await wait(30);
     viewer.querySelector(".seg-raw").click();
     await wait(30);
     check(viewer.querySelector(".an-rows").textContent.includes("2026-11-17T19:16:05.0638102Z") && viewer.classList.contains("is-raw"), "Raw shows the original text");
@@ -663,6 +698,27 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   push("Listening on 3000\r\n");
   check(/Trigger "Listening on": Listening on 3000/.test(document.querySelector(".toast")?.textContent ?? ""), "output of a running command fires the trigger with a message");
   await globalThis.__events["pty-block"]({ payload: { session: sid, id: 900, cmd_start: 1, start: 2, end: 3, lines: 1, exit: 0, ms: 5 } });
+}
+
+// Analyze pasted text: Open file…
+{
+  document.getElementById("menu-btn").click();
+  [...menu.querySelectorAll("button")].find((b) => /^Analyze pasted text/.test(b.textContent))?.click();
+  await wait(20);
+  const dlg = document.getElementById("dialog-host");
+  const open = [...dlg.querySelectorAll("button")].find((b) => b.textContent === "Open file…");
+  check(open, "the paste dialog has an Open file button");
+  const picker = dlg.querySelector("input[type=file]");
+  Object.defineProperty(picker, "files", { value: [{ name: "big.log", size: 30 * 1048576, text: async () => "x" }], configurable: true });
+  picker.dispatchEvent(new w.Event("change"));
+  await wait(20);
+  check(/too big/.test(dlg.textContent) && !document.getElementById("analyze"), "a file over 20 MB is refused with a hint");
+  Object.defineProperty(picker, "files", { value: [{ name: "small.log", size: 5, text: async () => "a\nb" }], configurable: true });
+  const opens = globalThis.__calls.filter(([c]) => c.startsWith("analyze_open")).length;
+  picker.dispatchEvent(new w.Event("change"));
+  await wait(40);
+  check(document.getElementById("analyze") && globalThis.__calls.filter(([c]) => c.startsWith("analyze_open")).length === opens + 1, "a small file opens in the viewer");
+  document.getElementById("analyze")?.querySelector(".an-close").click();
 }
 
 // presets
