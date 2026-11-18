@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { pathToFileURL } from "node:url";
 
 export const VERSION = "0.3.2";
@@ -17,7 +18,8 @@ const MAX_CHARS = 60000; // characters returned per call
 const MAX_RANGE = 16 << 20; // bytes of one command's output looked at per call
 const MAX_SEARCH_RUNS = 30; // newest saved files searched when no run is named
 const MAX_SEARCH_BYTES = 256 << 20; // bytes read per search call, across files
-const NAME = /^run-[0-9]+-[0-9]+\.raw$/;
+const NAME = /^run-[0-9]+-[0-9]+\.raw(\.gz)?$/;
+const MAX_UNPACKED = 1 << 30; // a compressed file that unpacks to more than this is refused
 
 export function dataDir() {
   if (process.env.DIGTERM_DATA) return process.env.DIGTERM_DATA;
@@ -65,15 +67,30 @@ export function redact(text) {
     .replace(/((?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_]*\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1[hidden]");
 }
 
+let gzCache = null; // the last unpacked file: { file, mtime, buf }
+/** Reads a saved file by position. Compressed files (.raw.gz) are unpacked into memory (the last one is kept). */
+function openSrc(file) {
+  if (file.endsWith(".gz")) {
+    const mtime = fs.statSync(file).mtimeMs;
+    if (!gzCache || gzCache.file !== file || gzCache.mtime !== mtime) {
+      gzCache = { file, mtime, buf: zlib.gunzipSync(fs.readFileSync(file), { maxOutputLength: MAX_UNPACKED }) };
+    }
+    const buf = gzCache.buf;
+    return { read: (b, bo, len, pos) => (pos >= buf.length ? 0 : buf.copy(b, bo, pos, Math.min(buf.length, pos + len))), close() {} };
+  }
+  const fd = fs.openSync(file, "r");
+  return { read: (b, bo, len, pos) => fs.readSync(fd, b, bo, len, pos), close: () => fs.closeSync(fd) };
+}
+
 /** Finds each finished command in a saved file: same OSC 133 rules as the app (B = command text, C = output, D = done). */
 export function scanFile(file) {
-  const fd = fs.openSync(file, "r");
+  const src = openSrc(file);
   const blocks = [];
   try {
     const buf = Buffer.alloc(1 << 20);
     let st = 0, escPos = 0, osc = [], bPos = null, cur = null, nextId = 1, offset = 0;
     for (;;) {
-      const n = fs.readSync(fd, buf, 0, buf.length, offset);
+      const n = src.read(buf, 0, buf.length, offset);
       if (n === 0) break;
       for (let i = 0; i < n; i++) {
         const b = buf[i], pos = offset + i;
@@ -102,10 +119,10 @@ export function scanFile(file) {
     for (const b of blocks) {
       const len = Math.max(0, Math.min(b.start - b.cmdStart, 2000));
       const cb = Buffer.alloc(len);
-      fs.readSync(fd, cb, 0, len, b.cmdStart);
+      src.read(cb, 0, len, b.cmdStart);
       b.command = stripAnsi(cb).trim();
     }
-  } finally { fs.closeSync(fd); }
+  } finally { src.close(); }
   return blocks;
 }
 
@@ -124,7 +141,7 @@ function pickRun(name) {
     if (!f) throw new Error("no saved output found (is Digterm's data folder " + dataDir() + " right?)");
     return f.name;
   }
-  if (typeof name !== "string" || !NAME.test(name)) throw new Error("run must be a name like run-1700000000-1.raw (see list_runs)");
+  if (typeof name !== "string" || !NAME.test(name)) throw new Error("run must be a name like run-1700000000-1.raw or run-1700000000-1.raw.gz (see list_runs)");
   if (!fs.existsSync(path.join(runsDir(), name))) throw new Error("no such run: " + name);
   return name;
 }
@@ -176,9 +193,9 @@ export function callTool(name, a = {}) {
     if (!blk) throw new Error("no command #" + a.id + " in " + run);
     const total = blk.end - blk.start;
     const len = Math.min(total, MAX_RANGE);
-    const fd = fs.openSync(path.join(runsDir(), run), "r");
+    const src = openSrc(path.join(runsDir(), run));
     const buf = Buffer.alloc(len);
-    try { fs.readSync(fd, buf, 0, len, blk.start); } finally { fs.closeSync(fd); }
+    try { src.read(buf, 0, len, blk.start); } finally { src.close(); }
     const lines = stripAnsi(buf).split("\n");
     if (lines.length && lines[lines.length - 1] === "") lines.pop();
     const from = int(a.from_line, 1, 1, 1e12), n = int(a.max_lines, 200, 1, MAX_LINES);
@@ -201,9 +218,9 @@ export function callTool(name, a = {}) {
         if (len <= 0) continue;
         if (budget < len) break outer;
         budget -= len;
-        const fd = fs.openSync(file, "r");
+        const src = openSrc(file);
         const buf = Buffer.alloc(len);
-        try { fs.readSync(fd, buf, 0, len, b.start); } finally { fs.closeSync(fd); }
+        try { src.read(buf, 0, len, b.start); } finally { src.close(); }
         const lines = stripAnsi(buf).split("\n");
         for (let i = 0; i < lines.length; i++) {
           if (lines[i].toLowerCase().includes(q)) {

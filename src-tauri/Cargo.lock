@@ -580,6 +580,7 @@ dependencies = [
 name = "digterm"
 version = "0.3.2"
 dependencies = [
+ "flate2",
  "portable-pty",
  "serde",
  "tauri",

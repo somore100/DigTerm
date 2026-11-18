@@ -54,6 +54,15 @@ fs.writeFileSync(path.join(dir, "runs", "run-1700000001-2.raw"), raw2);
 assert.match(text(call("read_output", { id: 3, run: "run-1700000001-2.raw" })), /\[hidden private key\]/);
 assert.doesNotMatch(text(call("read_output", { id: 3, run: "run-1700000001-2.raw" })), /XXXX/);
 
+// a compressed session (.raw.gz) reads the same
+import zlib from "node:zlib";
+fs.writeFileSync(path.join(dir, "runs", "run-1700000002-3.raw.gz"), zlib.gzipSync(Buffer.from(raw2)));
+assert.match(text(call("list_runs", {})), /run-1700000002-3\.raw\.gz/);
+assert.match(text(call("list_commands", { run: "run-1700000002-3.raw.gz" })), /#2  exit 1 .*false/);
+assert.match(text(call("read_output", { run: "run-1700000002-3.raw.gz", id: 2 })), /ERROR boom/);
+assert.match(text(call("search", { run: "run-1700000002-3.raw.gz", query: "boom" })), /run-1700000002-3\.raw\.gz #2 line 2/);
+assert.equal(call("list_commands", { run: "run-1700000002-9.raw.gz" }).isError, true);
+
 // over stdio, as a real client uses it
 const child = spawn(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), "digterm-mcp.mjs")], { env: process.env });
 let got = "";

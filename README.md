@@ -47,7 +47,8 @@ open any command's output in a viewer built for very large outputs, or follow a 
   or clear the history. Sort by date or size, filter by time range (past hour, week, year…), tick several sessions to
   copy their command lists or delete them. Automatic cleanup (Preferences, off by default): delete output older than
   N minutes/hours/days/months/years, and/or keep it under a size limit (delete the oldest until it fits, or all closed
-  output). Open terminals are never touched.
+  output). Old output can instead be **compressed** (gzip, usually about 10 times smaller) by the same kind of rules; it stays
+  in the history and is unpacked when you open it. Open terminals are never touched.
 
 **Workflow helpers** (all optional; the ones that change behaviour are off by default)
 - **Autocorrect** (Preferences, off by default): after "command not found", offer a fix for typos (`gti` → `git`) or

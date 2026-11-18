@@ -4,12 +4,13 @@ use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     hash::{Hash, Hasher},
     fs::{self, File},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{ipc::{Channel, InvokeResponseBody}, AppHandle, Emitter, Manager, State};
@@ -827,7 +828,12 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Saved output files (`run-*.raw`) as (path, size, age in seconds).
+/// True for the name of a saved output file: `run-*.raw`, or `run-*.raw.gz` once it has been compressed.
+fn is_run_name(name: &str) -> bool {
+    name.starts_with("run-") && (name.ends_with(".raw") || name.ends_with(".raw.gz"))
+}
+
+/// Saved output files (`run-*.raw` and `run-*.raw.gz`) as (path, size, age in seconds).
 fn run_files(app: &AppHandle) -> Result<Vec<(PathBuf, u64, u64)>, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("runs");
     let Ok(rd) = fs::read_dir(dir) else { return Ok(Vec::new()) };
@@ -837,7 +843,7 @@ fn run_files(app: &AppHandle) -> Result<Vec<(PathBuf, u64, u64)>, String> {
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !(name.starts_with("run-") && name.ends_with(".raw")) {
+        if !is_run_name(&name) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -962,17 +968,146 @@ fn list_runs(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<RunInfo>,
 
 /// Path of a saved output file by name; refuses anything that is not a plain `run-*.raw` name.
 fn run_path_by_name(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
-    if !(name.starts_with("run-") && name.ends_with(".raw")) || name.contains('/') || name.contains('\\') {
+    if !is_run_name(name) || name.contains('/') || name.contains('\\') {
         return Err("not a saved output file".into());
     }
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("runs").join(name))
+}
+
+/// Compresses `src` into `dst` (gzip). `dst` must not exist yet.
+fn gzip_file(src: &Path, dst: &Path) -> io::Result<()> {
+    let mut input = BufReader::new(File::open(src)?);
+    let mut enc = GzEncoder::new(BufWriter::new(create_private(dst, true)?), Compression::fast());
+    io::copy(&mut input, &mut enc)?;
+    let mut out = enc.finish()?;
+    out.flush()?;
+    out.get_ref().sync_all()
+}
+
+/// Unpacks a gzip file into `dst` (must not exist yet).
+fn gunzip_file(src: &Path, dst: &Path) -> io::Result<()> {
+    let mut dec = GzDecoder::new(BufReader::new(File::open(src)?));
+    let mut out = BufWriter::new(create_private(dst, true)?);
+    io::copy(&mut dec, &mut out)?;
+    out.flush()
+}
+
+/// The plain (uncompressed) file behind a saved name. The viewer reads byte ranges, so a `.raw.gz` is unpacked once
+/// into the `cache` folder (emptied at every start) and that copy is used.
+fn plain_run_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    let path = run_path_by_name(app, name)?;
+    if !name.ends_with(".gz") {
+        return Ok(path);
+    }
+    let cache = app.path().app_data_dir().map_err(|e| e.to_string())?.join("cache");
+    create_private_dir(&cache).map_err(|e| e.to_string())?;
+    let out = cache.join(name.trim_end_matches(".gz"));
+    if out.exists() {
+        return Ok(out);
+    }
+    let tmp = cache.join(format!("{name}.part"));
+    let _ = fs::remove_file(&tmp);
+    if let Err(e) = gunzip_file(&path, &tmp) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Could not unpack {name}: {e}"));
+    }
+    fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// Empties the folder of unpacked copies (called once when the app starts).
+#[tauri::command]
+fn clear_unpacked(app: AppHandle) {
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = fs::remove_dir_all(dir.join("cache"));
+    }
+}
+
+/// Which saved files an automatic compression packs. `files` holds (size, age in seconds, in use by an open terminal,
+/// already compressed); the result is the indexes to compress. `older` 0 = no age rule, `max` 0 = no size rule: once the
+/// uncompressed files add up to more than `max`, the oldest are packed first. Files younger than 10 minutes, files in use
+/// and files already packed are never chosen.
+fn plan_compress(files: &[(u64, u64, bool, bool)], older: u64, max: u64) -> Vec<usize> {
+    const MIN_AGE: u64 = 600;
+    let ok = |f: &(u64, u64, bool, bool)| !f.2 && !f.3 && f.1 >= MIN_AGE;
+    let mut pick = vec![false; files.len()];
+    if older > 0 {
+        for (i, f) in files.iter().enumerate() {
+            if ok(f) && f.1 >= older {
+                pick[i] = true;
+            }
+        }
+    }
+    if max > 0 {
+        let plain = |pick: &[bool]| files.iter().zip(pick).filter(|(f, p)| !f.3 && !**p).map(|(f, _)| f.0).sum::<u64>();
+        if plain(&pick) > max {
+            let mut order: Vec<usize> = (0..files.len()).filter(|&i| !pick[i] && ok(&files[i])).collect();
+            order.sort_by(|&a, &b| files[b].1.cmp(&files[a].1)); // oldest first
+            for i in order {
+                if plain(&pick) <= max {
+                    break;
+                }
+                pick[i] = true;
+            }
+        }
+    }
+    (0..files.len()).filter(|&i| pick[i]).collect()
+}
+
+/// Replaces `run-x.raw` by `run-x.raw.gz` (same modification time, so age rules keep working). The original is removed
+/// only after the compressed file is complete. Returns the size of the compressed file.
+fn pack_run(src: &Path) -> Option<u64> {
+    let with = |ext: &str| {
+        let mut s = src.as_os_str().to_owned();
+        s.push(ext);
+        PathBuf::from(s)
+    };
+    let (dst, tmp) = (with(".gz"), with(".gz.tmp"));
+    if dst.exists() {
+        return None;
+    }
+    let mtime = fs::metadata(src).and_then(|m| m.modified()).ok();
+    let _ = fs::remove_file(&tmp);
+    if gzip_file(src, &tmp).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return None;
+    }
+    if let (Some(t), Ok(f)) = (mtime, fs::OpenOptions::new().write(true).open(&tmp)) {
+        let _ = f.set_modified(t);
+    }
+    if fs::rename(&tmp, &dst).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return None;
+    }
+    let size = fs::metadata(&dst).map(|m| m.len()).unwrap_or(0);
+    fs::remove_file(src).ok()?;
+    Some(size)
+}
+
+/// Applies the automatic compression rules. Returns (files compressed, bytes saved).
+#[tauri::command]
+async fn autocompress(app: AppHandle, state: State<'_, AppState>, older_secs: u64, max_bytes: u64) -> Result<(u64, u64), String> {
+    let live: Vec<PathBuf> = state.sessions.lock().unwrap().values().map(|s| s.run_path.clone()).collect();
+    let files = run_files(&app)?;
+    let info: Vec<(u64, u64, bool, bool)> = files
+        .iter()
+        .map(|(p, size, age)| (*size, *age, live.contains(p), p.extension().map_or(false, |e| e == "gz")))
+        .collect();
+    let (mut n, mut saved) = (0u64, 0u64);
+    for i in plan_compress(&info, older_secs, max_bytes) {
+        if let Some(packed) = pack_run(&files[i].0) {
+            n += 1;
+            saved += files[i].1.saturating_sub(packed);
+        }
+    }
+    Ok((n, saved))
 }
 
 /// Finds the commands in a saved output file by running it through the same OSC 133 scanner
 /// as live output. Returns each block with its command text. Durations are not known (`ms` is 0).
 #[tauri::command]
 async fn scan_run(app: AppHandle, name: String) -> Result<Vec<(Block, String)>, String> {
-    let path = run_path_by_name(&app, &name)?;
+    let path = plain_run_path(&app, &name)?;
     let mut f = File::open(&path).map_err(|e| e.to_string())?;
     let mut scanner = Scanner::new();
     let mut blocks = Vec::new();
@@ -1003,7 +1138,7 @@ async fn analyze_open_run(app: AppHandle, state: State<'_, AppState>, name: Stri
     if end < start {
         return Err("bad range".into());
     }
-    let path = run_path_by_name(&app, &name)?;
+    let path = plain_run_path(&app, &name)?;
     set_analysis(&state, path, start, end)
 }
 
@@ -1835,7 +1970,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, autoclean, delete_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, autoclean, autocompress, clear_unpacked, delete_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
@@ -2291,6 +2426,42 @@ mod tests {
         assert_eq!(plan_cleanup(&f, 400, 250, false), vec![1, 3]); // age rule first, then size
         assert_eq!(plan_cleanup(&[(500, 1, true)], 0, 100, true), Vec::<usize>::new()); // an open file is never removed
         assert_eq!(plan_cleanup(&f, 0, 1000, false), Vec::<usize>::new()); // under the limit: nothing
+    }
+
+    #[test]
+    fn plan_compress_applies_age_and_size_rules() {
+        // (size, age in seconds, in use, already packed)
+        let f = [(100, 5000, false, false), (100, 9000, false, false), (100, 9000, true, false), (100, 100, false, false), (100, 9000, false, true)];
+        assert_eq!(plan_compress(&f, 0, 0), Vec::<usize>::new());
+        assert_eq!(plan_compress(&f, 6000, 0), vec![1]); // old enough, closed, not packed
+        assert_eq!(plan_compress(&f, 1000, 0), vec![0, 1]); // a file in use, a young file and a packed one are skipped
+        assert_eq!(plan_compress(&f, 0, 350), vec![1]); // plain files add up to 400: the oldest closed one first, 300 left is enough
+        assert_eq!(plan_compress(&f, 0, 250), vec![0, 1]); // two are needed
+        assert_eq!(plan_compress(&f, 0, 100), vec![0, 1]); // still over the limit, but nothing else may be packed
+        assert_eq!(plan_compress(&f, 0, 10_000), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn gzip_roundtrip_and_pack_run_keep_content_and_age() {
+        let dir = std::env::temp_dir().join(format!("digterm-gz-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("run-1-1.raw");
+        let text: Vec<u8> = (0..20_000).flat_map(|i| format!("line {i} 2026-11-17T19:16:05Z [DEBUG]: hello\r\n").into_bytes()).collect();
+        fs::write(&src, &text).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(86_400 * 3);
+        fs::OpenOptions::new().write(true).open(&src).unwrap().set_modified(old).unwrap();
+        let packed = pack_run(&src).expect("packed");
+        assert!(!src.exists(), "the original is removed after packing");
+        let gz = dir.join("run-1-1.raw.gz");
+        assert_eq!(fs::metadata(&gz).unwrap().len(), packed);
+        assert!(packed < text.len() as u64 / 4, "text compresses well");
+        let age = SystemTime::now().duration_since(fs::metadata(&gz).unwrap().modified().unwrap()).unwrap().as_secs();
+        assert!(age > 86_400 * 2, "the file keeps its old modification time");
+        let back = dir.join("back.raw");
+        gunzip_file(&gz, &back).unwrap();
+        assert_eq!(fs::read(&back).unwrap(), text);
+        assert!(is_run_name("run-1-1.raw") && is_run_name("run-1-1.raw.gz") && !is_run_name("run-1-1.raw.gz.tmp") && !is_run_name("notes.raw"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

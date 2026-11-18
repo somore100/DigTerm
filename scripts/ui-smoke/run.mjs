@@ -570,6 +570,66 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(suggest("./gti") === null, "paths are left alone");
 }
 
+// compress old saved output: preferences and the backend call
+{
+  document.getElementById("menu-btn").click();
+  [...menu.querySelectorAll("button")].find((b) => /^Preferences/.test(b.textContent))?.click();
+  await wait(30);
+  const dlg = document.getElementById("dialog-host");
+  const labelOf = (re) => [...dlg.querySelectorAll("label, .opt, div")].find((d) => re.test(d.textContent) && d.querySelector("input[type=number]"));
+  const ageRow = labelOf(/^Compress output older than/);
+  check(ageRow, "Preferences has a Compress output older than setting");
+  const num = ageRow?.querySelector("input[type=number]");
+  num.value = "3";
+  num.dispatchEvent(new w.Event("change"));
+  const unitSel = ageRow.querySelector("select");
+  unitSel.value = "day";
+  unitSel.dispatchEvent(new w.Event("change"));
+  check(JSON.parse(w.localStorage.getItem("digterm.prefs")).compressAge === 3, "the compress rule is saved");
+  const before = globalThis.__calls.filter(([c]) => c === "autocompress").length;
+  [...dlg.querySelectorAll("button")].find((b) => b.textContent === "Clean up now")?.click();
+  await wait(40);
+  const call = globalThis.__calls.filter(([c]) => c === "autocompress");
+  check(call.length === before + 1 && call.at(-1)[1].olderSecs === 3 * 86400 && call.at(-1)[1].maxBytes === 0, "Clean up now asks the backend to compress by the rule");
+  num.value = "0";
+  num.dispatchEvent(new w.Event("change"));
+  [...dlg.querySelectorAll("button")].find((b) => /^(Close|✕|X)$/.test(b.textContent))?.click();
+}
+
+// history: sessions from the same moment with the same size share one row
+{
+  const t = Math.floor(Date.now() / 1000) - 100;
+  globalThis.__runs = [1, 2, 3].map((i) => ({ name: `run-${i}-1.raw`, size: 1000 + i * 37, modified: t + i, open: true })).concat([{ name: "run-9-1.raw", size: 4000, modified: t - 5000, open: false }]);
+  document.getElementById("menu-btn").click();
+  [...menu.querySelectorAll("button")].find((b) => /History of earlier/.test(b.textContent))?.click();
+  await wait(30);
+  const host = document.getElementById("dialog-host");
+  const rows = () => [...host.querySelectorAll(".hist-run")];
+  check(rows().length === 2 && /×3 similar/.test(rows()[0].textContent + rows()[1].textContent), "three identical sessions show as one row");
+  const pickBox = rows().find((r) => /×3/.test(r.textContent)).querySelector("input[type=checkbox]");
+  pickBox.checked = true;
+  pickBox.dispatchEvent(new w.Event("change"));
+  check(/3 selected/.test(host.querySelector(".hist-count").textContent), "ticking a group selects every session in it");
+  check(/2 rows · 4 sessions/.test(host.querySelector(".hist-count").textContent), "the counter shows rows and sessions");
+  globalThis.__emptyRuns = ["run-9-1.raw"];
+  const ebox = [...host.querySelectorAll(".hist-bar input[type=checkbox]")][2];
+  ebox.checked = true;
+  ebox.dispatchEvent(new w.Event("change"));
+  await wait(60);
+  check(rows().length === 1 && /3 sessions/.test(host.querySelector(".hist-count").textContent), "Hide empty removes sessions with no commands");
+  ebox.checked = false;
+  ebox.dispatchEvent(new w.Event("change"));
+  globalThis.__emptyRuns = null;
+  const cbox = [...host.querySelectorAll(".hist-bar input[type=checkbox]")][1];
+  cbox.checked = false;
+  cbox.dispatchEvent(new w.Event("change"));
+  check(rows().length === 4, "unticking Compact lists every session");
+  cbox.checked = true;
+  cbox.dispatchEvent(new w.Event("change"));
+  globalThis.__runs = null;
+  [...host.querySelectorAll("button")].find((b) => /^(Close|✕|X)$/.test(b.textContent))?.click();
+}
+
 // history: date range, sort, selection, copy, delete
 {
   document.getElementById("menu-btn").click();

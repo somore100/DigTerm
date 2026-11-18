@@ -47,6 +47,11 @@ const PREF_DEFAULTS = {
   cleanAge: 0, // autoclean by time: delete closed output older than this many cleanUnit; 0 = never
   cleanUnit: "day", // minute | hour | day | month | year
   cleanMaxMb: 0, // autoclean by size: keep saved output under this many MB; 0 = no limit
+  compressAge: 0, // autocompress: gzip closed output older than this many compressUnit; 0 = never
+  compressUnit: "day",
+  compressMaxMb: 0, // autocompress by size: pack the oldest until uncompressed output is under this many MB; 0 = no limit
+  histHideEmpty: false, // History: hide sessions with no recorded commands
+  histCompact: true, // History: sessions from the same moment with the same size are shown as one row
   cleanWhole: false, // when over the size: false = delete the oldest until it fits, true = delete all closed output
   keys: {}, // action id -> combo overrides
 };
@@ -73,6 +78,20 @@ async function runAutoclean() {
   const maxBytes = Math.round(prefs.cleanMaxMb * 1048576);
   if (!olderSecs && !maxBytes) return null;
   return invoke("autoclean", { olderSecs, maxBytes, whole: prefs.cleanWhole });
+}
+
+// Compresses old saved output (gzip) by the compress rules; null when no rule is set.
+async function runAutocompress() {
+  const olderSecs = prefs.compressAge * (CLEAN_UNITS[prefs.compressUnit] ?? 86400);
+  const maxBytes = Math.round(prefs.compressMaxMb * 1048576);
+  if (!olderSecs && !maxBytes) return null;
+  return invoke("autocompress", { olderSecs, maxBytes });
+}
+// Compress first, then delete (the size rule then counts the smaller files).
+async function runCleanup() {
+  const packed = await runAutocompress().catch(() => null);
+  const removed = await runAutoclean();
+  return { packed, removed };
 }
 
 // ---------------------------------------------------------------- theme
@@ -1365,6 +1384,14 @@ function showPreferences() {
     maxMb.type = "number"; maxMb.min = 0; maxMb.max = 10000000; maxMb.value = prefs.cleanMaxMb;
     const whole = document.createElement("select");
     for (const [v, l] of [[false, "Delete the oldest until it fits"], [true, "Delete all closed output"]]) whole.add(new Option(l, v, false, prefs.cleanWhole === v));
+    const cAge = document.createElement("input");
+    cAge.type = "number"; cAge.min = 0; cAge.max = 100000; cAge.value = prefs.compressAge;
+    const cUnit = document.createElement("select");
+    for (const u of Object.keys(CLEAN_UNITS)) cUnit.add(new Option(u + "s", u, false, prefs.compressUnit === u));
+    const cAgeRow = document.createElement("span");
+    cAgeRow.append(cAge, " ", cUnit);
+    const cMaxMb = document.createElement("input");
+    cMaxMb.type = "number"; cMaxMb.min = 0; cMaxMb.max = 10000000; cMaxMb.value = prefs.compressMaxMb;
     const usage = document.createElement("span");
     const showUsage = async () => {
       try { const [n, b] = await invoke("runs_usage"); usage.textContent = `${n} files, ${fmtBytes(b)}`; } catch {}
@@ -1375,17 +1402,23 @@ function showPreferences() {
       prefs.cleanUnit = unit.value;
       prefs.cleanMaxMb = Math.min(10000000, Math.max(0, Number(maxMb.value) || 0));
       prefs.cleanWhole = whole.value === "true";
+      prefs.compressAge = Math.min(100000, Math.max(0, Math.floor(Number(cAge.value)) || 0));
+      prefs.compressUnit = cUnit.value;
+      prefs.compressMaxMb = Math.min(10000000, Math.max(0, Number(cMaxMb.value) || 0));
       savePrefs();
     };
-    for (const el of [age, unit, maxMb, whole]) el.onchange = saveClean;
+    for (const el of [age, unit, maxMb, whole, cAge, cUnit, cMaxMb]) el.onchange = saveClean;
     const clean = document.createElement("button");
     clean.textContent = "Clean up now";
     clean.title = "Applies the two rules above to closed terminals' saved output; open terminals are never touched";
     clean.onclick = async () => {
       saveClean();
       try {
-        const r = await runAutoclean();
-        usage.textContent = r === null ? "Set a rule above first" : r[0] ? `Done: removed ${r[0]} files, freed ${fmtBytes(r[1])}` : "Nothing to remove";
+        const { packed, removed } = await runCleanup();
+        const parts = [];
+        if (packed?.[0]) parts.push(`compressed ${packed[0]} files, saved ${fmtBytes(packed[1])}`);
+        if (removed?.[0]) parts.push(`removed ${removed[0]} files, freed ${fmtBytes(removed[1])}`);
+        usage.textContent = packed === null && removed === null ? "Set a rule above first" : parts.length ? `Done: ${parts.join("; ")}` : "Nothing to do";
         setTimeout(showUsage, 2500);
       } catch (e) { usage.textContent = String(e); }
     };
@@ -1420,7 +1453,10 @@ function showPreferences() {
       heading("Commands list"), opt("Order", order),
       opt("Analyze one command at a time (off: Analyze opens the whole run)", split),
       heading("Saved output"), opt("Delete output older than (0 = never)", ageRow),
-      opt("Keep saved output under this size in MB (0 = no limit)", maxMb), opt("When over that size", whole), opt("Disk used", cleanRow),
+      opt("Keep saved output under this size in MB (0 = no limit)", maxMb), opt("When over that size", whole),
+      opt("Compress output older than (0 = never; kept, but about 10 times smaller)", cAgeRow),
+      opt("Compress the oldest when uncompressed output is over this many MB (0 = no limit)", cMaxMb),
+      opt("Disk used", cleanRow),
     );
     const note = document.createElement("div");
     note.className = "note";
@@ -1773,6 +1809,16 @@ function showHistory() {
     const all = document.createElement("input");
     all.type = "checkbox";
     all.title = "Select everything shown";
+    const compactBox = document.createElement("input");
+    compactBox.type = "checkbox";
+    compactBox.checked = prefs.histCompact;
+    const compactLabel = Object.assign(document.createElement("label"), { className: "an-toggle", title: "Show sessions that started within a minute and have the same size as shown (for example several terminals opened together) as one row" });
+    compactLabel.append(compactBox, " Compact");
+    const emptyBox = document.createElement("input");
+    emptyBox.type = "checkbox";
+    emptyBox.checked = prefs.histHideEmpty;
+    const emptyLabel = Object.assign(document.createElement("label"), { className: "an-toggle", title: "Hide sessions with no recorded commands (each file is checked once; this can take a moment)" });
+    emptyLabel.append(emptyBox, " Hide empty");
     const count = document.createElement("span");
     count.className = "hist-count";
     const mk = (text, title) => Object.assign(document.createElement("button"), { textContent: text, title });
@@ -1781,37 +1827,49 @@ function showHistory() {
     const clear = mk("Clear history", "Deletes the saved output of all closed terminals; open terminals are kept");
     const bar = document.createElement("div");
     bar.className = "hist-bar";
-    bar.append(all, sortSel, rangeSel, count, copySel, delSel, clear);
+    bar.append(all, sortSel, rangeSel, compactLabel, emptyLabel, count, copySel, delSel, clear);
     const list = document.createElement("div");
     list.className = "history";
     body.append(note, bar, list);
 
     let runs = [];
     const picked = new Set();
+    const scanned = new Map(); // closed sessions: name -> list of commands (never changes once closed)
+    let rows = 0;
+    let checking = false;
+    const isEmpty = (r) => !r.open && scanned.has(r.name) && scanned.get(r.name).length === 0;
     const shown = () => {
       const lim = HIST_RANGES[Number(rangeSel.value)][1];
       const since = Date.now() / 1000 - lim;
-      return runs.filter((r) => !lim || r.modified >= since).sort(HIST_SORTS[sortSel.value][1]);
+      return runs.filter((r) => (!lim || r.modified >= since) && !(prefs.histHideEmpty && isEmpty(r))).sort(HIST_SORTS[sortSel.value][1]);
+    };
+    const getScan = async (r) => {
+      if (!r.open && scanned.has(r.name)) return scanned.get(r.name);
+      const found = await invoke("scan_run", { name: r.name });
+      if (!r.open) scanned.set(r.name, found);
+      return found;
     };
     const refreshBar = () => {
       const v = shown();
       const sel = v.filter((r) => picked.has(r.name));
-      count.textContent = `${v.length} shown · ${sel.length} selected`;
+      count.textContent = `${rows || v.length} rows · ${v.length} sessions · ${sel.length} selected${checking ? " · checking…" : ""}`;
       copySel.disabled = delSel.disabled = !sel.length;
       all.checked = v.length > 0 && sel.length === v.length;
     };
-    const addRun = (r) => {
+    const addRun = (r, same = []) => {
+      const members = [r, ...same];
       const row = document.createElement("div");
       row.className = "hist-run";
       const top = document.createElement("div");
       top.className = "hist-top";
       const pick = document.createElement("input");
       pick.type = "checkbox";
-      pick.checked = picked.has(r.name);
-      pick.onchange = () => { pick.checked ? picked.add(r.name) : picked.delete(r.name); refreshBar(); };
+      pick.checked = members.every((m) => picked.has(m.name));
+      pick.onchange = () => { for (const m of members) pick.checked ? picked.add(m.name) : picked.delete(m.name); refreshBar(); };
       const head = document.createElement("button");
       head.className = "hist-head";
-      head.textContent = `${new Date(r.modified * 1000).toLocaleString()} · ${fmtSize(r.size)}${r.open ? " · open now" : ""}`;
+      head.textContent = `${new Date(r.modified * 1000).toLocaleString()} · ${fmtSize(r.size)}${r.name.endsWith(".gz") ? " · compressed" : ""}${r.open ? " · open now" : ""}${same.length ? ` · ×${members.length} similar` : ""}`;
+      if (same.length) head.title = `${members.length} sessions from the same minute with the same size; the commands of the first are shown. Untick Compact to list each one.`;
       top.append(pick, head);
       const cmds = document.createElement("div");
       cmds.className = "hist-cmds";
@@ -1821,9 +1879,9 @@ function showHistory() {
         cmds.hidden = !cmds.hidden;
         if (cmds.hidden || loaded) return;
         loaded = true;
-        cmds.textContent = "Reading…";
+        cmds.textContent = r.name.endsWith(".gz") ? "Unpacking and reading…" : "Reading…";
         try {
-          const found = await invoke("scan_run", { name: r.name });
+          const found = [...(await getScan(r))];
           cmds.replaceChildren();
           if (!found.length) cmds.textContent = "No commands recorded in this file.";
           for (const [b, text] of found.reverse()) {
@@ -1851,8 +1909,32 @@ function showHistory() {
       list.replaceChildren();
       const v = shown();
       if (!v.length) list.textContent = runs.length ? "Nothing in this time range." : "No saved output yet.";
-      v.forEach(addRun);
+      rows = 0;
+      if (!prefs.histCompact) v.forEach((r) => { addRun(r); rows++; });
+      else {
+        for (let i = 0; i < v.length;) {
+          const r = v[i];
+          let j = i + 1;
+          while (j < v.length && fmtSize(v[j].size) === fmtSize(r.size) && v[j].open === r.open && v[j].name.endsWith(".gz") === r.name.endsWith(".gz") && Math.abs(v[j].modified - r.modified) <= 60) j++;
+          addRun(r, v.slice(i + 1, j));
+          rows++;
+          i = j;
+        }
+      }
       refreshBar();
+      if (prefs.histHideEmpty && !checking) checkEmpty();
+    };
+    const checkEmpty = async () => {
+      const todo = shown().filter((r) => !r.open && !scanned.has(r.name));
+      if (!todo.length) return;
+      checking = true;
+      refreshBar();
+      for (const r of todo) {
+        if (!document.body.contains(list)) break; // dialog closed
+        try { await getScan(r); } catch { scanned.set(r.name, [1]); } // unreadable: keep it visible
+      }
+      checking = false;
+      if (document.body.contains(list)) render();
     };
     const load = () => invoke("list_runs").then((r) => {
       runs = r;
@@ -1861,6 +1943,8 @@ function showHistory() {
     }).catch((e) => { list.textContent = String(e); });
 
     sortSel.onchange = rangeSel.onchange = render;
+    emptyBox.onchange = () => { prefs.histHideEmpty = emptyBox.checked; savePrefs(); render(); };
+    compactBox.onchange = () => { prefs.histCompact = compactBox.checked; savePrefs(); render(); };
     all.onchange = () => {
       for (const r of shown()) all.checked ? picked.add(r.name) : picked.delete(r.name);
       render();
@@ -2056,8 +2140,9 @@ await listen("pty-exit", (e) => {
 applyCommandOrder();
 if (prefs.alwaysOnTop) getCurrentWindow().setAlwaysOnTop(true).catch(() => {});
 renderLaunchers();
-runAutoclean().catch(() => {});
-setInterval(() => runAutoclean().catch(() => {}), 60000);
+invoke("clear_unpacked").catch(() => {}); // unpacked copies of compressed history from the last run
+runCleanup().catch(() => {});
+setInterval(() => runCleanup().catch(() => {}), 60000);
 
 new ResizeObserver(() => tabs.forEach(layoutTab)).observe($("stage"));
 applyTheme();

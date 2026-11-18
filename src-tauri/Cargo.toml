@@ -8,5 +8,6 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] } # gzip for old saved output
 portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
