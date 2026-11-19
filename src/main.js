@@ -2140,7 +2140,8 @@ await listen("pty-exit", (e) => {
 applyCommandOrder();
 if (prefs.alwaysOnTop) getCurrentWindow().setAlwaysOnTop(true).catch(() => {});
 renderLaunchers();
-invoke("clear_unpacked").catch(() => {}); // unpacked copies of compressed history from the last run
+invoke("clear_unpacked").catch(() => {});
+invoke("drop_empty_runs").catch(() => {}); // saved sessions in which no command was run // unpacked copies of compressed history from the last run
 runCleanup().catch(() => {});
 setInterval(() => runCleanup().catch(() => {}), 60000);
 

@@ -408,12 +408,49 @@ fn pty_resize(state: State<'_, AppState>, id: u32, rows: u16, cols: u16) -> Resu
         .map_err(|e| e.to_string())
 }
 
-/// Ends a session: kills its shell and forgets it. The run file stays on disk.
+/// Largest saved file that is checked for "no commands" (bigger ones are never dropped).
+const EMPTY_CHECK_MAX: u64 = 64 * 1024;
+
+/// True when the file is small and holds no finished or started command, so deleting it loses nothing.
+/// Any read problem counts as "not empty".
+fn run_is_empty(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else { return false };
+    if meta.len() > EMPTY_CHECK_MAX {
+        return false;
+    }
+    let Ok(data) = fs::read(path) else { return false };
+    let mut scanner = Scanner::new();
+    let mut any = false;
+    scanner.feed(&data, 0, &mut |_| any = true);
+    // a started command (C marker) counts even if it never finished; prompt markers (A, B) do not
+    !any && !data.windows(5).any(|w| w == b"133;C")
+}
+
+/// Ends a session: kills its shell and forgets it. The run file stays on disk,
+/// unless no command was ever run in it (then it would only clutter History).
 #[tauri::command]
 fn pty_close(state: State<'_, AppState>, id: u32) {
     if let Some(mut session) = state.sessions.lock().unwrap().remove(&id) {
         let _ = session.killer.kill();
+        if run_is_empty(&session.run_path) {
+            let _ = fs::remove_file(&session.run_path);
+        }
     }
+}
+
+/// Deletes saved files of earlier sessions in which no command was ever run (at start-up).
+/// Only plain files older than 10 minutes and not used by a session of this app. Returns how many.
+#[tauri::command]
+async fn drop_empty_runs(app: AppHandle, state: State<'_, AppState>) -> Result<u64, String> {
+    let live: Vec<PathBuf> = state.sessions.lock().unwrap().values().map(|s| s.run_path.clone()).collect();
+    let mut n = 0;
+    for (p, _size, age) in run_files(&app)? {
+        let plain = p.extension().map_or(false, |e| e == "raw");
+        if plain && age >= 600 && !live.contains(&p) && run_is_empty(&p) && fs::remove_file(&p).is_ok() {
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// The shell's current working directory (Linux only for now).
@@ -1970,7 +2007,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, autoclean, autocompress, clear_unpacked, delete_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, autoclean, autocompress, drop_empty_runs, clear_unpacked, delete_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
@@ -2426,6 +2463,23 @@ mod tests {
         assert_eq!(plan_cleanup(&f, 400, 250, false), vec![1, 3]); // age rule first, then size
         assert_eq!(plan_cleanup(&[(500, 1, true)], 0, 100, true), Vec::<usize>::new()); // an open file is never removed
         assert_eq!(plan_cleanup(&f, 0, 1000, false), Vec::<usize>::new()); // under the limit: nothing
+    }
+
+    #[test]
+    fn run_is_empty_only_for_small_files_without_commands() {
+        let dir = std::env::temp_dir().join(format!("digterm-empty-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let empty = dir.join("a.raw");
+        fs::write(&empty, b"\x1b]133;A;t\x07$ \x1b]133;B;t\x07\r\n").unwrap();
+        assert!(run_is_empty(&empty));
+        let used = dir.join("b.raw");
+        fs::write(&used, b"\x1b]133;C\x07hi\r\n\x1b]133;D;0\x07").unwrap();
+        assert!(!run_is_empty(&used));
+        let big = dir.join("c.raw");
+        fs::write(&big, vec![b'x'; 70_000]).unwrap();
+        assert!(!run_is_empty(&big));
+        assert!(!run_is_empty(&dir.join("missing.raw")));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
