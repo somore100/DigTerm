@@ -12,7 +12,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { pathToFileURL } from "node:url";
 
-export const VERSION = "0.3.2";
+export const VERSION = "0.4.0";
 const MAX_LINES = 2000; // lines per read_output call
 const MAX_CHARS = 60000; // characters returned per call
 const MAX_RANGE = 16 << 20; // bytes of one command's output looked at per call
