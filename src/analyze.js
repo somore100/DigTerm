@@ -86,6 +86,7 @@ export async function openAnalyze(block) {
         <option value="fields">Fold repeats + word/field patterns</option>
         <option value="blocks">Fold repeated multi-line blocks</option>
         <option value="blocks-numbers">Fold repeated blocks (ignore numbers)</option>
+        <option value="minutes">Fold lines by minute (timestamps)</option>
         <option value="sev-err">Show only error lines</option>
         <option value="sev-warn">Show only warning + error lines</option>
       </select>
@@ -410,7 +411,7 @@ export async function openAnalyze(block) {
       let cls = "row";
       if (matches.length && hasMatchIn(r.line, end)) cls += cur >= r.line && cur <= end ? " cur" : " hit";
       if (sel && r.line <= sel[1] && end >= sel[0]) cls += " sel";
-      const badge = r.count > 1 ? `<span class="rep" title="Click to expand">×${r.count.toLocaleString()}</span>` : "";
+      const badge = r.count > 1 ? `<span class="rep" title="Click to expand">×${r.count.toLocaleString()}</span>` : folded() && expanded.has(r.line) ? `<span class="rep un" title="Click to fold again">▾</span>` : "";
       const nSub = wrapEff() && lens && Number.isFinite(wrapW) && t.length > wrapW ? Math.ceil(t.length / wrapW) : 1;
       let inner = "";
       for (let j = 0; j < nSub; j++) {
@@ -606,8 +607,11 @@ export async function openAnalyze(block) {
     const line = Number(row.dataset.line);
     const count = Number(row.dataset.count);
     if (e.target.classList.contains("rep")) {
-      expanded.add(line);
+      const top = rowAt(vAtY(body.scrollTop).v).line;
+      if (e.target.classList.contains("un")) expanded.delete(line);
+      else expanded.add(line);
       rebuild();
+      body.scrollTop = yOfV(viewOf(top));
       render();
       return;
     }

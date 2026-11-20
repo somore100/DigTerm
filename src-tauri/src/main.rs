@@ -1766,6 +1766,66 @@ async fn analyze_pattern_lines(state: State<'_, AppState>, template: String) -> 
     Ok(hits)
 }
 
+/// The `YYYY-MM-DD HH:MM` (or with `T`) part of a line's timestamp, with the text after it.
+/// The timestamp must start within the first 40 bytes (so a log prefix like `[info] ` is fine).
+fn minute_key(line: &str) -> Option<(&str, &str)> {
+    let b = line.as_bytes();
+    let head = b.len().min(56);
+    let d = |i: usize| b[i].is_ascii_digit();
+    let mut i = 0;
+    while i + 16 <= head && i <= 40 {
+        if d(i) && d(i + 1) && d(i + 2) && d(i + 3) && b[i + 4] == b'-' && d(i + 5) && d(i + 6) && b[i + 7] == b'-' && d(i + 8) && d(i + 9)
+            && (b[i + 10] == b'T' || b[i + 10] == b' ') && d(i + 11) && d(i + 12) && b[i + 13] == b':' && d(i + 14) && d(i + 15)
+        {
+            return Some((&line[i..i + 16], &line[i + 16..]));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Folds consecutive lines that share the same minute of their timestamp. Lines without a timestamp
+/// (stack traces, wrapped text) belong to the minute above them. Returns groups of 2 or more lines;
+/// the summary is the minute and the start of its first line.
+fn group_minutes(a: &Analysis) -> Result<Vec<Group>, String> {
+    let total = a.starts.len();
+    let mut groups = Vec::new();
+    let mut cur: Option<(usize, usize, String)> = None; // first line, count, summary
+    let mut key = String::new();
+    let mut from = 0;
+    while from < total {
+        let to = (from + 20_000).min(total);
+        for (k, line) in a.read(from, to)?.into_iter().enumerate() {
+            let i = from + k;
+            match minute_key(&line) {
+                Some((minute, rest)) if cur.is_none() || minute != key => {
+                    if let Some((first, count, summary)) = cur.take() {
+                        if count >= 2 {
+                            groups.push(Group { first: first as u64, count: count as u64, summary: Some(summary) });
+                        }
+                    }
+                    key = minute.to_string();
+                    let text = rest.trim_start_matches(|c: char| c.is_ascii_digit() || ":.,+-Z".contains(c)).trim();
+                    let preview: String = text.chars().take(100).collect();
+                    cur = Some((i, 1, format!("{minute}  ▸  {preview}")));
+                }
+                _ => {
+                    if let Some(c) = cur.as_mut() {
+                        c.1 += 1;
+                    }
+                }
+            }
+        }
+        from = to;
+    }
+    if let Some((first, count, summary)) = cur {
+        if count >= 2 {
+            groups.push(Group { first: first as u64, count: count as u64, summary: Some(summary) });
+        }
+    }
+    Ok(groups)
+}
+
 /// Finds runs of consecutive lines to fold. `mode` is "exact" (identical lines) or "numbers"
 /// (lines identical except for standalone numbers). Returns runs of 2 or more lines.
 #[tauri::command]
@@ -1773,6 +1833,9 @@ async fn analyze_groups(state: State<'_, AppState>, mode: String) -> Result<Vec<
     let a = current_analysis(&state)?;
     if mode == "fields" {
         return group_fields(&a);
+    }
+    if mode == "minutes" {
+        return group_minutes(&a);
     }
     if mode == "blocks" || mode == "blocks-numbers" {
         return group_blocks(&a, mode == "blocks-numbers");
@@ -2280,6 +2343,18 @@ mod tests {
         assert!(block_repeats(&[1, 1, 1, 1]).is_empty());
         assert!(block_repeats(&[1, 2, 3, 4, 5]).is_empty());
         assert!(block_repeats(&[]).is_empty());
+    }
+
+    #[test]
+    fn group_minutes_folds_lines_of_the_same_minute() {
+        let text = "[i] 2026-11-17T19:16:05.1Z a\n2026-11-17T19:16:06Z b\n  at trace\n2026-11-17T19:17:00Z c\nplain\n2026-11-17T19:18:00Z d\n";
+        let g = with_analysis(text, |a| group_minutes(a).unwrap());
+        assert_eq!(g.len(), 2, "single-line minute is not a group");
+        assert_eq!((g[0].first, g[0].count), (0, 3));
+        assert_eq!(g[0].summary.as_deref(), Some("2026-11-17T19:16  ▸  a"));
+        assert_eq!((g[1].first, g[1].count), (3, 2));
+        assert_eq!(minute_key("no stamp here"), None);
+        assert_eq!(minute_key("x 2026-11-17 19:16:05 y").unwrap().0, "2026-11-17 19:16");
     }
 
     #[test]

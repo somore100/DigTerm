@@ -425,6 +425,15 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
     viewer.querySelector(".an-copy-all").click();
     await wait(30);
     check(copied === "⟲ 2-line block × 5: x …  ×10", `folded copy all gives the folded text: got ${JSON.stringify(copied)}`);
+    // a folded group can be opened and folded again
+    check(!!mode.querySelector('option[value="minutes"]'), "folding by minute is offered");
+    const rep = () => viewer.querySelector(".an-rows .rep");
+    rep()?.click();
+    await wait(30);
+    check(!!viewer.querySelector(".an-rows .rep.un"), "an opened group shows a fold-again mark");
+    viewer.querySelector(".an-rows .rep.un")?.click();
+    await wait(30);
+    check(/×10/.test(viewer.querySelector(".an-rows").textContent), "clicking the mark folds the group again");
     globalThis.__groups = null;
   }
   globalThis.__lines = null;
