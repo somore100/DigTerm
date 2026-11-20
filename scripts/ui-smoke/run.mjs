@@ -719,6 +719,8 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   const [nameIn] = dlg.querySelectorAll("input");
   nameIn.value = "server";
   dlg.querySelector("textarea").value = "echo serve-it";
+  check(dlg.querySelector("select").value === "paste", "new buttons default to typing the text");
+  dlg.querySelector("select").value = "tab";
   [...dlg.querySelectorAll("button")].find((b) => b.textContent === "Save").click();
   await wait(20);
   check(host.querySelectorAll(".launcher").length === 1, "saving adds a coloured button");
@@ -729,6 +731,21 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(spawns() === before + 1, "clicking the button opens a new terminal");
   check(globalThis.__calls.some(([c, a]) => c === "pty_write" && /echo serve-it\r$/.test(a.data)), "and runs its command there");
   check(JSON.parse(w.localStorage.getItem("digterm.buttons") || "[]").length === 1, "buttons are saved");
+  // a "type it" button only types the text at the prompt of the active terminal (no Enter), and can be used again
+  host.querySelector(".launcher-add").click();
+  await wait(20);
+  const dlg2 = document.getElementById("dialog-host");
+  dlg2.querySelector("input").value = "snippet";
+  dlg2.querySelector("textarea").value = "ls -la";
+  [...dlg2.querySelectorAll("button")].find((b) => b.textContent === "Save").click();
+  await wait(20);
+  const sb = [...host.querySelectorAll(".launcher")].find((b) => b.title.startsWith("snippet"));
+  const n0 = globalThis.__calls.length;
+  sb.click();
+  sb.click();
+  await wait(30);
+  const typed = globalThis.__calls.slice(n0).filter(([c, a]) => c === "pty_write");
+  check(typed.length === 2 && typed.every(([, a]) => a.data === "\x15ls -la"), `a type-it button types the text without Enter, every time: got ${JSON.stringify(typed)}`);
 }
 
 // output triggers
@@ -801,6 +818,7 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
     check(two.map((c) => c.cmd).join("|") === "sudo apt-get install git|sudo apt-get install curl", "several packages, flags dropped, stops at &&");
     check(installCandidates("sudo pacman -Syu ripgrep")[0]?.cmd === "sudo pacman -S ripgrep", "pacman -S...");
     check(installCandidates("sudo dnf install $(rm -rf x)").length === 0 && installCandidates("dnf remove htop").length === 0 && installCandidates("we install things").length === 0, "unsafe names and other commands give no link");
+    check(installCandidates('$ echo "sudo dnf install htop"').map((c) => c.cmd).join() === "sudo dnf install htop", "quotes around the command do not hide the package");
     const col = installCandidates("sudo dnf install htop")[0];
     check(col.x1 === 18 && col.x2 === 21, "the link covers just the package name");
     check(ARCHIVE.test("a.tar.gz") && ARCHIVE.test("x.ZIP") && !ARCHIVE.test("notes.txt"), "archive names are recognised");

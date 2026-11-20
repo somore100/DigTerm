@@ -62,7 +62,8 @@ mark.w-note { color: var(--note-fg); background: var(--note-bg); }
 #tabbar > button, #menu button { font: inherit; font-size: 14px; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 2px 9px; cursor: pointer; }
 #tabbar > button:hover, #menu button:hover { background: var(--btn); }
 #tabbar .spacer { flex: 1; }
-#tabs { display: flex; gap: 4px; overflow-x: auto; min-width: 0; }
+#tabs { display: flex; gap: 4px; overflow-x: auto; min-width: 0; scrollbar-width: none; } /* no bar over the tabs: scroll with the wheel */
+#tabs::-webkit-scrollbar { display: none; }
 .tab-btn { display: flex; align-items: center; gap: 8px; padding: 3px 4px 3px 12px; font-size: 13px; background: var(--bg3); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; white-space: nowrap; }
 .tab-btn.active { background: var(--sel); border-color: var(--sel-line); }
 .tab-btn button { font-size: 11px; color: inherit; opacity: 0.55; background: transparent; border: none; cursor: pointer; border-radius: 4px; }
@@ -78,6 +79,8 @@ mark.w-note { color: var(--note-fg); background: var(--note-bg); }
 .tab { position: absolute; inset: 0; display: none; }
 .tab.active { display: block; }
 .grid { position: absolute; inset: 0; display: grid; gap: 4px; padding: 4px; box-sizing: border-box; }
+.pane.folder-mode { box-shadow: inset 4px 0 0 #3fb950; }
+.pane.folder-mode::after { content: "folder mode: open a folder, or type any command to leave"; position: absolute; right: 8px; bottom: 4px; padding: 1px 8px; border-radius: 8px; background: #3fb950; color: #04150a; font-size: 11px; pointer-events: none; opacity: 0.85; z-index: 5; }
 .pane { position: relative; min-width: 0; min-height: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .pane.focused { border-color: var(--focus); }
 .pane-term { position: absolute; inset: 0; padding: 6px 8px; box-sizing: border-box; }

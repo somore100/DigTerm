@@ -2,6 +2,7 @@
 export const COMMANDS = [
   ["List files", "ls -la", "dir", "Get-ChildItem (ls, dir)"],
   ["Change folder", "cd /path", "cd /d C:\\path", "Set-Location (cd)"],
+  ["Browse folders (Digterm)", "folder  (ls, then ls again after each folder you open)", "(not yet)", "(not yet)"],
   ["Current folder", "pwd", "cd", "Get-Location (pwd)"],
   ["Show a file", "cat file", "type file", "Get-Content (cat, type)"],
   ["Follow a file's end", "tail -f file", "(none)", "Get-Content file -Wait -Tail 20"],

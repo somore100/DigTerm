@@ -12,3 +12,5 @@ __dt_precmd() {
 PROMPT_COMMAND="__dt_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 PS1='\[\e]133;A;'"$__dt_tok"'\a\]'"$PS1"'\[\e]133;B;'"$__dt_tok"'\a\]'
 PS0=$'\e]133;C;'"$__dt_tok"$'\a'"$PS0"
+# Digterm "folder" command: lists the folder. Digterm then keeps listing after each folder you open from the output.
+folder() { ls "$@"; }

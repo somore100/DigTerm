@@ -154,10 +154,9 @@ function fmtPath(cwd, style) {
 // ---------------------------------------------------------------- panes
 
 let ctrlHeld = false; // folder links only light up while Ctrl is down
-let rightCtrl = false; // package names in install commands light up only for the RIGHT Ctrl key
-document.addEventListener("keydown", (e) => { if (e.key === "Control" || e.key === "Meta") ctrlHeld = true; if (e.code === "ControlRight") rightCtrl = true; });
-document.addEventListener("keyup", (e) => { if (e.key === "Control" || e.key === "Meta") ctrlHeld = false; if (e.code === "ControlRight") rightCtrl = false; });
-window.addEventListener("blur", () => { ctrlHeld = false; rightCtrl = false; });
+document.addEventListener("keydown", (e) => { if (e.key === "Control" || e.key === "Meta") ctrlHeld = true; });
+document.addEventListener("keyup", (e) => { if (e.key === "Control" || e.key === "Meta") ctrlHeld = false; });
+window.addEventListener("blur", () => { ctrlHeld = false; });
 
 const IS_WIN = /Windows/i.test(navigator.userAgent);
 const CONTROL = /[\x00-\x1f\x7f]/; // typed into the shell, these would act as keystrokes (Ctrl+C, Enter...)
@@ -196,7 +195,7 @@ function openTarget(pane, info, action) {
   if (pane.id === null) return;
   if (CONTROL.test(info.path)) return toast("That name contains control characters, so it is not typed into the shell", 3500);
   // "catv" shows control characters as ^X instead of letting them change the terminal's state
-  const cmd = action === "cd" ? `cd -- ${shellQuote(info.path)}` : action === "catv" ? `cat -v -- ${shellQuote(info.path)}` : `${IS_WIN ? "type" : "cat --"} ${shellQuote(info.path)}`;
+  const cmd = action === "cd" ? `cd -- ${shellQuote(info.path)}${pane.folderMode && !IS_WIN ? " && ls" : ""}` : action === "catv" ? `cat -v -- ${shellQuote(info.path)}` : `${IS_WIN ? "type" : "cat --"} ${shellQuote(info.path)}`;
   invoke("pty_write", { id: pane.id, data: `\x15${IS_WIN ? cmd.replace("cd -- ", "cd ") : cmd}\r` }); // Ctrl+U clears what was typed
   pane.term.focus();
 }
@@ -420,16 +419,16 @@ class Pane {
       },
     });
 
-    // Easy install: right Ctrl over a package name in an install command, click = the command is typed, not run
+    // Easy install: Ctrl over a package name in an install command, click = the command is typed, not run
     this.term.registerLinkProvider({
       provideLinks: (y, done) => {
-        if (!prefs.pkgClick || !rightCtrl || this.id === null) return done(undefined);
+        if (!prefs.pkgClick || !ctrlHeld || this.id === null) return done(undefined);
         const found = installCandidates(this.term.buffer.active.getLine(y - 1)?.translateToString(true) ?? "");
         done(found.length ? found.map((c) => ({
           range: { start: { x: c.x1, y }, end: { x: c.x2, y } },
           text: c.name,
           activate: (e) => {
-            if (!e.ctrlKey || !rightCtrl) return;
+            if (!e.ctrlKey && !e.metaKey) return;
             invoke("pty_write", { id: this.id, data: `\x15${c.cmd}` }); // Ctrl+U clears what was typed; no Enter
             this.term.focus();
             toast(`Typed: ${c.cmd}. Press Enter to install.`, 5000);
@@ -675,6 +674,18 @@ class Pane {
     info.append(hint);
   }
 
+  // Folder mode: `folder` lists the folder; while it is on, opening a folder from the output (click or Ctrl+click) lists
+  // the new one too. Typing any other command than cd/ls/folder ends it.
+  noteCommand(c, b) {
+    if (/^folder(\s|$)/.test(c) && b.exit === 0) this.setFolderMode(true);
+    else if (this.folderMode && !/^(cd|ls|folder)(\s|$)/.test(c)) this.setFolderMode(false);
+  }
+
+  setFolderMode(on) {
+    this.folderMode = on;
+    this.el.classList.toggle("folder-mode", on);
+  }
+
   addBlock(b) {
     finishFollow(b); // a viewer following this command stops at the final end
     this.queueAfter(b);
@@ -696,6 +707,7 @@ class Pane {
         const c = t.split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
         cmdText.textContent = c;
         cmdText.title = c;
+        this.noteCommand(c, b);
         if (b.exit === 127 || b.exit === 9009) this.offerFix(c, b, info);
       })
       .catch(() => {});
@@ -1046,6 +1058,7 @@ function renderTabBar(force = false) {
   if (!force && sig === lastBar) return;
   lastBar = sig;
   const host = $("tabs");
+  if (!host.dataset.wheel) { host.dataset.wheel = "1"; host.addEventListener("wheel", (e) => { if (e.deltaX === 0) { host.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false }); }
   host.replaceChildren();
   tabs.forEach((tab) => {
     const b = document.createElement("div");
@@ -1475,7 +1488,7 @@ function showPreferences() {
       heading("Terminal"), opt("Copy and paste keys", copyStyle),
  opt("Scrollback lines (full output is always saved to disk)", scroll),
       opt("Ctrl+click a folder or file name in the output to open it (archives are listed)", links),
-      opt("Right Ctrl+click a package name in an install command to type that command (you press Enter)", pkg),
+      opt("Ctrl+click a package name in an install command to type that command (you press Enter)", pkg),
       heading("Autocorrect"), opt("Commands that are not found (typos, Windows names on Linux)", fix), opt("How sure a fix must be to run by itself", fixLevel),
       heading("Privacy"), opt("Mask IPs, emails, user names and secrets when copying (details in the viewer)", mask),
       heading("Commands list"), opt("Order", order),
@@ -1612,9 +1625,18 @@ const launcherBusy = (l) => {
 
 async function runLauncher(l) {
   const old = launched.get(l.id);
-  if (launcherBusy(l)) { selectTab(old.tab); focusPane(old); return; } // already running: show it
   const lines = parseLines(l.commands);
   if (CONTROL.test(l.cwd)) return toast("The folder of this button contains control characters");
+  if (l.where === "paste") { // like a snippet: the text is typed at the prompt of whatever terminal is active, not run, and can be used again anywhere
+    const p = activePane;
+    if (!p || p.id === null) return;
+    const text = [...(l.cwd ? [`cd ${IS_WIN ? `"${l.cwd}"` : `-- ${shellQuote(l.cwd)}`}`] : []), ...lines].join(IS_WIN ? " & " : " && ");
+    if (CONTROL.test(text)) return toast("That text contains control characters, so it is not typed");
+    invoke("pty_write", { id: p.id, data: `\x15${text}` }); // Ctrl+U clears what was typed; no Enter
+    p.term.focus();
+    return;
+  }
+  if (l.where !== "current" && launcherBusy(l)) { selectTab(old.tab); focusPane(old); return; } // already running in its own tab or pane: show it
   const base = l.cwd || activePane?.cwd || undefined;
   let pane;
   if (l.where === "current") {
@@ -1685,7 +1707,7 @@ function showLauncherEditor(existing) {
     paint();
     const cwd = Object.assign(document.createElement("input"), { value: existing?.cwd ?? "", placeholder: "Folder (empty: the current terminal's folder)" });
     const where = document.createElement("select");
-    for (const [v, l] of WHERE) where.add(new Option(l, v, false, (existing?.where ?? "tab") === v));
+    for (const [v, l] of WHERE) where.add(new Option(l, v, false, (existing?.where ?? "paste") === v));
     const cmds = Object.assign(document.createElement("textarea"), { value: existing?.commands ?? "", rows: 6, className: "batch-area", placeholder: "Commands, one per line. Each runs after the previous one has finished." });
     const warn = Object.assign(document.createElement("div"), { className: "warn" });
     const save = Object.assign(document.createElement("button"), { textContent: "Save" });

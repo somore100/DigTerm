@@ -2,7 +2,7 @@
 import { parseLines } from "./batch.js";
 
 export const PALETTE = ["#7c3aed", "#2563eb", "#0891b2", "#16a34a", "#ca8a04", "#ea580c", "#dc2626", "#db2777"];
-export const WHERE = [["tab", "In a new tab"], ["split", "In a new pane next to this one"], ["current", "In the current terminal"]];
+export const WHERE = [["paste", "Type it in the current terminal (you press Enter)"], ["tab", "In a new tab"], ["split", "In a new pane next to this one"], ["current", "In the current terminal"]];
 const KEY = "digterm.buttons";
 
 export function loadLaunchers() {
