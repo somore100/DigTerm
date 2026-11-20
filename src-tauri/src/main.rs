@@ -408,6 +408,45 @@ fn pty_resize(state: State<'_, AppState>, id: u32, rows: u16, cols: u16) -> Resu
         .map_err(|e| e.to_string())
 }
 
+/// The tools to try, in order, for listing the files in an archive (names, sizes; nothing is unpacked).
+fn archive_tools(path: &str) -> Vec<(&'static str, Vec<&'static str>)> {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".zip") || lower.ends_with(".jar") || lower.ends_with(".whl") {
+        vec![("bsdtar", vec!["-tvf"]), ("unzip", vec!["-l"]), ("7z", vec!["l"]), ("tar", vec!["-tvf"])]
+    } else if lower.ends_with(".7z") {
+        vec![("7z", vec!["l"]), ("bsdtar", vec!["-tvf"]), ("tar", vec!["-tvf"])]
+    } else {
+        vec![("tar", vec!["-tvf"]), ("bsdtar", vec!["-tvf"])]
+    }
+}
+
+/// Lists what is inside an archive file as text (like `ls`). Only reads: nothing is extracted.
+#[tauri::command]
+async fn list_archive(path: String) -> Result<String, String> {
+    if !Path::new(&path).is_file() {
+        return Err("That file does not exist".into());
+    }
+    let mut tried = Vec::new();
+    for (tool, args) in archive_tools(&path) {
+        let mut cmd = std::process::Command::new(tool);
+        cmd.args(&args).arg(&path).stdin(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        match cmd.output() {
+            Ok(o) if o.status.success() && !o.stdout.is_empty() => {
+                let mut text = String::from_utf8_lossy(&o.stdout[..o.stdout.len().min(8 << 20)]).into_owned();
+                text.retain(|c| !c.is_control() || c == '\n' || c == '\t'); // file names could hold escape codes
+                return Ok(text);
+            }
+            _ => tried.push(tool),
+        }
+    }
+    Err(format!("Could not list this archive (tried {}). Install tar, unzip or 7z.", tried.join(", ")))
+}
+
 /// Largest saved file that is checked for "no commands" (bigger ones are never dropped).
 const EMPTY_CHECK_MAX: u64 = 64 * 1024;
 
@@ -2070,7 +2109,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, autoclean, autocompress, drop_empty_runs, clear_unpacked, delete_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, autoclean, autocompress, drop_empty_runs, list_archive, clear_unpacked, delete_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .run(tauri::generate_context!())
         .expect("error while running Digterm");
 }
@@ -2343,6 +2382,13 @@ mod tests {
         assert!(block_repeats(&[1, 1, 1, 1]).is_empty());
         assert!(block_repeats(&[1, 2, 3, 4, 5]).is_empty());
         assert!(block_repeats(&[]).is_empty());
+    }
+
+    #[test]
+    fn archive_tools_depend_on_the_file_type() {
+        assert_eq!(archive_tools("/x/a.ZIP")[0].0, "bsdtar");
+        assert_eq!(archive_tools("/x/a.7z")[0].0, "7z");
+        assert_eq!(archive_tools("/x/a.tar.gz")[0], ("tar", vec!["-tvf"]));
     }
 
     #[test]

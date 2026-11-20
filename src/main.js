@@ -5,7 +5,8 @@ import "@xterm/xterm/css/xterm.css";
 import "./style.css";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getVersion, getName } from "@tauri-apps/api/app";
+import { getVersion, getName, getTauriVersion } from "@tauri-apps/api/app";
+import { installCandidates, ARCHIVE } from "./install.js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze, finishFollow } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
@@ -37,6 +38,7 @@ const PREF_DEFAULTS = {
   autoSize: false, // smaller text when there are more terminals in a tab
   copyMode: "output", // output | command
   splitByEntry: true, // Analyze opens one command (true) or the whole run (false)
+  pkgClick: true, // right Ctrl+click a package name in an install command types that command (you press Enter)
   folderLinks: true, // Ctrl+click a folder name in the output to cd into it
   buttonsShown: false, // the colour buttons strip on the left
   autoFix: "off", // off | passive (offer a fix after "command not found") | prefill (type it, you press Enter) | aggressive (run it when sure and harmless)
@@ -152,9 +154,10 @@ function fmtPath(cwd, style) {
 // ---------------------------------------------------------------- panes
 
 let ctrlHeld = false; // folder links only light up while Ctrl is down
-document.addEventListener("keydown", (e) => { if (e.key === "Control" || e.key === "Meta") ctrlHeld = true; });
-document.addEventListener("keyup", (e) => { if (e.key === "Control" || e.key === "Meta") ctrlHeld = false; });
-window.addEventListener("blur", () => { ctrlHeld = false; });
+let rightCtrl = false; // package names in install commands light up only for the RIGHT Ctrl key
+document.addEventListener("keydown", (e) => { if (e.key === "Control" || e.key === "Meta") ctrlHeld = true; if (e.code === "ControlRight") rightCtrl = true; });
+document.addEventListener("keyup", (e) => { if (e.key === "Control" || e.key === "Meta") ctrlHeld = false; if (e.code === "ControlRight") rightCtrl = false; });
+window.addEventListener("blur", () => { ctrlHeld = false; rightCtrl = false; });
 
 const IS_WIN = /Windows/i.test(navigator.userAgent);
 const CONTROL = /[\x00-\x1f\x7f]/; // typed into the shell, these would act as keystrokes (Ctrl+C, Enter...)
@@ -189,6 +192,7 @@ function openTarget(pane, info, action) {
   if (action === "reveal") return void invoke("open_path", { path: info.path.replace(/[\\/][^\\/]*$/, "") || "/" }).catch((e) => alert(String(e)));
   if (action === "viewer") return openAnalyze({ label: `File: ${basename(info.path)}`, importPath: info.path });
   if (action === "default") return void invoke("open_path", { path: info.path }).catch((e) => alert(String(e)));
+  if (action === "list") return void invoke("list_archive", { path: info.path }).then((text) => openAnalyze({ label: `Archive: ${basename(info.path)}`, importText: text })).catch((e) => toast(String(e), 4000));
   if (pane.id === null) return;
   if (CONTROL.test(info.path)) return toast("That name contains control characters, so it is not typed into the shell", 3500);
   // "catv" shows control characters as ^X instead of letting them change the terminal's state
@@ -411,8 +415,26 @@ class Pane {
         done(words.flatMap((w, i) => (infos[i]?.kind ? [{
           range: { start: { x: w.x1, y }, end: { x: w.x2, y } },
           text: w.name,
-          activate: (e) => { if (e.ctrlKey || e.metaKey) openTarget(this, infos[i], { dir: "cd", text: "viewer", url: "browser" }[infos[i].kind] ?? "reveal"); },
+          activate: (e) => { if (e.ctrlKey || e.metaKey) openTarget(this, infos[i], infos[i].kind === "file" && ARCHIVE.test(infos[i].path) ? "list" : { dir: "cd", text: "viewer", url: "browser" }[infos[i].kind] ?? "reveal"); },
         }] : [])));
+      },
+    });
+
+    // Easy install: right Ctrl over a package name in an install command, click = the command is typed, not run
+    this.term.registerLinkProvider({
+      provideLinks: (y, done) => {
+        if (!prefs.pkgClick || !rightCtrl || this.id === null) return done(undefined);
+        const found = installCandidates(this.term.buffer.active.getLine(y - 1)?.translateToString(true) ?? "");
+        done(found.length ? found.map((c) => ({
+          range: { start: { x: c.x1, y }, end: { x: c.x2, y } },
+          text: c.name,
+          activate: (e) => {
+            if (!e.ctrlKey || !rightCtrl) return;
+            invoke("pty_write", { id: this.id, data: `\x15${c.cmd}` }); // Ctrl+U clears what was typed; no Enter
+            this.term.focus();
+            toast(`Typed: ${c.cmd}. Press Enter to install.`, 5000);
+          },
+        })) : undefined);
       },
     });
 
@@ -429,6 +451,7 @@ class Pane {
       if (info?.kind === "url") items.push(["Open in browser", () => openTarget(this, info, "browser")]);
       if (info?.kind === "dir") items.push(["Open folder here (cd)", () => openTarget(this, info, "cd")], ["Open in file manager", () => openTarget(this, info, "default")]);
       if (info?.kind === "text") items.push(["Open in Digterm viewer", () => openTarget(this, info, "viewer")], ...(info.safe ? [["Show in terminal (cat)", () => openTarget(this, info, "cat")]] : IS_WIN ? [] : [["Show in terminal safely (cat -v)", () => openTarget(this, info, "catv")]]), ["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
+      if (info?.kind === "file" && ARCHIVE.test(info.path)) items.push(["List archive contents", () => openTarget(this, info, "list")]);
       if (info?.kind === "file") items.push(["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
       if (info?.kind) items.push([info.kind === "url" ? "Copy link" : "Copy path", () => navigator.clipboard.writeText(info.path).then(() => toast("Copied"))]);
       if (selected) items.push(["Copy", () => navigator.clipboard.writeText(maskCopy(this.selectedText())).then(copiedToast)]);
@@ -1366,6 +1389,10 @@ function showPreferences() {
     links.type = "checkbox"; links.checked = prefs.folderLinks;
     links.onchange = () => { prefs.folderLinks = links.checked; savePrefs(); };
 
+    const pkg = document.createElement("input");
+    pkg.type = "checkbox"; pkg.checked = prefs.pkgClick;
+    pkg.onchange = () => { prefs.pkgClick = pkg.checked; savePrefs(); };
+
     const split = document.createElement("input");
     split.type = "checkbox"; split.checked = prefs.splitByEntry;
     split.onchange = () => setSplitByEntry(split.checked);
@@ -1447,7 +1474,8 @@ function showPreferences() {
       heading("Startup"), opt("Restore directories on start", restore),
       heading("Terminal"), opt("Copy and paste keys", copyStyle),
  opt("Scrollback lines (full output is always saved to disk)", scroll),
-      opt("Ctrl+click a folder or file name in the output to open it", links),
+      opt("Ctrl+click a folder or file name in the output to open it (archives are listed)", links),
+      opt("Right Ctrl+click a package name in an install command to type that command (you press Enter)", pkg),
       heading("Autocorrect"), opt("Commands that are not found (typos, Windows names on Linux)", fix), opt("How sure a fix must be to run by itself", fixLevel),
       heading("Privacy"), opt("Mask IPs, emails, user names and secrets when copying (details in the viewer)", mask),
       heading("Commands list"), opt("Order", order),
@@ -1991,10 +2019,20 @@ function showAbout() {
     const wrap = document.createElement("div");
     wrap.className = "about";
     wrap.innerHTML = `<img src="/logo.png" alt="" /><h2>Digterm</h2><div>Version <span id="about-version">…</span> · MIT license</div>
-      <p>A terminal that helps you understand large command output.</p>
+      <p>A terminal that helps you understand large command output: every command's output is a block you can open in a viewer
+      with folding, search and a compact view. Earlier sessions stay in History, and a read-only MCP server lets AI tools read them.</p>
+      <table class="about-versions"></table>
       <div class="note">github.com/somore100/DigTerm</div>`;
     body.append(wrap);
-    getVersion().then((v) => { wrap.querySelector("#about-version").textContent = v; }).catch(() => {});
+    const table = wrap.querySelector(".about-versions");
+    const row = (k, v) => { const tr = table.insertRow(); tr.insertCell().textContent = k; tr.insertCell().textContent = v; };
+    const ua = navigator.userAgent;
+    const webview = ua.match(/(?:AppleWebKit|Chrome|Edg)\/[\d.]+/g)?.join(" · ") ?? "unknown";
+    getVersion().then((v) => { wrap.querySelector("#about-version").textContent = v; row("Digterm", v); }).catch(() => {})
+      .then(() => getTauriVersion()).then((v) => row("Tauri", v)).catch(() => {})
+      .then(() => row("xterm.js", typeof __XTERM_VERSION__ === "undefined" ? "unknown" : __XTERM_VERSION__))
+      .then(() => row("Web view", webview))
+      .then(() => invoke("system_info")).then((info) => { const os = info.find(([k]) => /^os$/i.test(k)); if (os) row("System", os[1]); }).catch(() => {});
   });
 }
 

@@ -123,6 +123,10 @@ mark.w-note { color: var(--note-fg); background: var(--note-bg); }
 .dialog .warn { color: var(--fail); font-size: 12px; min-height: 16px; }
 .dialog .about { text-align: center; padding-top: 12px; }
 .dialog .about img { width: 96px; height: 96px; border-radius: 20px; }
+.dialog .about p { max-width: 460px; margin: 10px auto; }
+.dialog .about-versions { margin: 8px auto; border-collapse: collapse; text-align: left; font-size: 12px; }
+.dialog .about-versions td { padding: 2px 10px; }
+.dialog .about-versions td:first-child { color: var(--muted, #888); }
 .dialog .about h2 { margin: 10px 0 2px; }
 .dialog .linkbtn { font: inherit; font-size: 12px; color: inherit; background: var(--btn); border: 1px solid var(--line2); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
 .findbar { position: absolute; top: 6px; right: 40px; z-index: 3; display: flex; align-items: center; gap: 4px; padding: 4px 6px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 4px 16px #0006; }

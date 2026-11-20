@@ -792,6 +792,19 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
 
 // presets
 {
+  {
+    // easy install: package names in install commands, typed (never run) with the right Ctrl key
+    const { installCandidates, ARCHIVE } = await import("../../src/install.js");
+    const one = installCandidates("Command 'htop' not found, but can be installed with: sudo dnf install htop");
+    check(one.length === 1 && one[0].cmd === "sudo dnf install htop" && one[0].name === "htop", "install hint gives the package and its command");
+    const two = installCandidates("$ sudo apt-get install -y git curl && echo done");
+    check(two.map((c) => c.cmd).join("|") === "sudo apt-get install git|sudo apt-get install curl", "several packages, flags dropped, stops at &&");
+    check(installCandidates("sudo pacman -Syu ripgrep")[0]?.cmd === "sudo pacman -S ripgrep", "pacman -S...");
+    check(installCandidates("sudo dnf install $(rm -rf x)").length === 0 && installCandidates("dnf remove htop").length === 0 && installCandidates("we install things").length === 0, "unsafe names and other commands give no link");
+    const col = installCandidates("sudo dnf install htop")[0];
+    check(col.x1 === 18 && col.x2 === 21, "the link covers just the package name");
+    check(ARCHIVE.test("a.tar.gz") && ARCHIVE.test("x.ZIP") && !ARCHIVE.test("notes.txt"), "archive names are recognised");
+  }
   const { PRESETS, presetCommands, presetAsButton, platformOf } = await import("../../src/presets.js");
   const { normalize } = await import("../../src/launchers.js");
   check(platformOf("Mozilla (Windows NT 10)") === "win" && platformOf("(Macintosh)") === "mac" && platformOf("(X11; Linux)") === "linux", "platform comes from the user agent");
