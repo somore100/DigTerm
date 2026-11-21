@@ -516,6 +516,8 @@ struct PathInfo {
     /// A text file that is safe to print with `cat`: no escape, bell, shift-in/out or other control characters
     /// that would leave the terminal in a broken state.
     safe: bool,
+    /// A file with the executable permission (always false on Windows).
+    exec: bool,
 }
 
 /// True when the start of the file has no NUL bytes and is valid UTF-8 (a cut-off last character is fine).
@@ -554,7 +556,7 @@ fn is_terminal_safe(path: &Path) -> bool {
 #[tauri::command]
 fn path_info(cwd: Option<String>, names: Vec<String>) -> Vec<PathInfo> {
     let home = home_dir();
-    let none = || PathInfo { kind: "", path: String::new(), safe: false };
+    let none = || PathInfo { kind: "", path: String::new(), safe: false, exec: false };
     names
         .iter()
         .take(256)
@@ -576,9 +578,15 @@ fn path_info(cwd: Option<String>, names: Vec<String>) -> Vec<PathInfo> {
                 }
             };
             let mut safe = false;
+            let mut exec = false;
             let kind = if full.is_dir() {
                 "dir"
             } else if full.is_file() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    exec = fs::metadata(&full).map_or(false, |m| m.permissions().mode() & 0o111 != 0);
+                }
                 if looks_like_text(&full) {
                     safe = is_terminal_safe(&full);
                     "text"
@@ -594,7 +602,7 @@ fn path_info(cwd: Option<String>, names: Vec<String>) -> Vec<PathInfo> {
             if shown.chars().any(|c| c.is_control()) {
                 return none();
             }
-            PathInfo { kind, path: shown, safe }
+            PathInfo { kind, path: shown, safe, exec }
         })
         .collect()
 }
@@ -2533,6 +2541,14 @@ mod tests {
         let info = path_info(cwd.clone(), vec!["a.log".into(), "color.log".into()]);
         assert!(info[0].safe && !info[1].safe && info[1].kind == "text", "a text file with escape codes is text but not safe to cat");
         assert!(path_info(None, vec!["relative".into()])[0].kind.is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(base.join("tool.sh"), "#!/bin/sh\n").unwrap();
+            fs::set_permissions(base.join("tool.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+            let info = path_info(cwd.clone(), vec!["tool.sh".into(), "a.log".into()]);
+            assert!(info[0].exec && !info[1].exec, "the executable permission is reported");
+        }
         #[cfg(unix)]
         {
             fs::write(base.join("a\u{3}b"), "x\n").unwrap();

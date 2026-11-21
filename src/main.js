@@ -7,6 +7,7 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion, getName, getTauriVersion } from "@tauri-apps/api/app";
 import { installCandidates, ARCHIVE } from "./install.js";
+import { runCommand, runnableSelection } from "./runfile.js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openAnalyze, finishFollow } from "./analyze.js";
 import { maskCopy, loadMask, saveMask } from "./mask.js";
@@ -45,7 +46,7 @@ const PREF_DEFAULTS = {
   autoFixLevel: "medium", // high | medium | low: how sure a suggestion must be
   alwaysOnTop: false, // keep the window above other windows
   copyStyle: "terminal", // terminal: Ctrl+Shift+C/V only (Ctrl+C interrupts) | windows: Ctrl+C copies when text is selected, Ctrl+V pastes
-  newestBottom: true, // Commands list: first command on top, newest at the bottom (list follows the bottom)
+  newestBottom: false, // Commands list: newest on top (true = first command on top, newest at the bottom, list follows the bottom)
   cleanAge: 0, // autoclean by time: delete closed output older than this many cleanUnit; 0 = never
   cleanUnit: "day", // minute | hour | day | month | year
   cleanMaxMb: 0, // autoclean by size: keep saved output under this many MB; 0 = no limit
@@ -63,6 +64,7 @@ function loadPrefs() {
     const p = { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem("digterm.prefs") || "{}") };
     if (p.cleanupDays > 0 && !p.cleanAge) { p.cleanAge = p.cleanupDays; p.cleanUnit = "day"; } // setting from versions before 0.3
     delete p.cleanupDays;
+    if (!p.orderV2) { p.newestBottom = false; p.orderV2 = true; } // newest on top is the default now; the old default is reset once, the choice in Preferences stays
     return p;
   } catch {
     return { ...PREF_DEFAULTS };
@@ -199,6 +201,20 @@ function openTarget(pane, info, action) {
   invoke("pty_write", { id: pane.id, data: `\x15${IS_WIN ? cmd.replace("cd -- ", "cd ") : cmd}\r` }); // Ctrl+U clears what was typed
   pane.term.focus();
 }
+
+// Run: types a command into the active terminal and enters it. Only from an explicit click on Run.
+function runInTerminal({ path, exec, text }) {
+  const pane = activePane;
+  if (!pane || pane.id === null) return toast("No terminal to run it in");
+  if (pane.running) return toast("A command is still running in this terminal");
+  const cmd = path ? runCommand(path, !!exec, IS_WIN, shellQuote) : runnableSelection(text);
+  if (!cmd) return toast("Digterm does not know how to run that");
+  if (CONTROL.test(cmd)) return toast("That contains control characters, so it is not typed");
+  invoke("pty_write", { id: pane.id, data: `\x15${cmd}\r` });
+  pane.term.focus();
+  toast(`Running: ${cmd}`, 3000);
+}
+document.addEventListener("digterm-run", (e) => runInTerminal(e.detail));
 
 class Pane {
   constructor(tab, cwd, font) {
@@ -449,11 +465,13 @@ class Pane {
       }
       if (info?.kind === "url") items.push(["Open in browser", () => openTarget(this, info, "browser")]);
       if (info?.kind === "dir") items.push(["Open folder here (cd)", () => openTarget(this, info, "cd")], ["Open in file manager", () => openTarget(this, info, "default")]);
+      if ((info?.kind === "text" || info?.kind === "file") && runCommand(info.path, info.exec, IS_WIN, shellQuote)) items.push(["Run in terminal", () => runInTerminal({ path: info.path, exec: info.exec })]);
       if (info?.kind === "text") items.push(["Open in Digterm viewer", () => openTarget(this, info, "viewer")], ...(info.safe ? [["Show in terminal (cat)", () => openTarget(this, info, "cat")]] : IS_WIN ? [] : [["Show in terminal safely (cat -v)", () => openTarget(this, info, "catv")]]), ["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
       if (info?.kind === "file" && ARCHIVE.test(info.path)) items.push(["List archive contents", () => openTarget(this, info, "list")]);
       if (info?.kind === "file") items.push(["Open with default app", () => openTarget(this, info, "default")], ["Show in file manager", () => openTarget(this, info, "reveal")]);
       if (info?.kind) items.push([info.kind === "url" ? "Copy link" : "Copy path", () => navigator.clipboard.writeText(info.path).then(() => toast("Copied"))]);
       if (selected) items.push(["Copy", () => navigator.clipboard.writeText(maskCopy(this.selectedText())).then(copiedToast)]);
+      if (selected && runnableSelection(selected) && this.id !== null) items.push(["Run selection", () => runInTerminal({ text: selected })]);
       if (selected) items.push(["Hide selection", () => this.hideSelection()]);
       const cell = this.cellAt(e);
       const here = cell ? this.liveHides().filter((h) => h.marker.line === cell.y && cell.x >= h.x0 && cell.x < h.x1) : [];

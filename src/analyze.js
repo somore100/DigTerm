@@ -3,6 +3,7 @@ import { maskCopy, loadMask, saveMask, MASK_KINDS } from "./mask.js";
 import { copiedToast } from "./toast.js";
 import { showContextMenu } from "./ctxmenu.js";
 import { renderMarkdown } from "./markdown.js";
+import { runCommand, runnableSelection } from "./runfile.js";
 import { compactLine, pickAliases, logDates, groupByMinute } from "./compact.js";
 
 let ROW = 18;
@@ -107,6 +108,7 @@ export async function openAnalyze(block) {
       <button class="an-save" hidden>Save</button>
       <button class="an-discard" hidden>Discard</button>
       <button class="an-unhide-all" title="Show all hidden text again" hidden>Show hidden</button>
+      <button class="an-run" title="Run this file in the active terminal" hidden>Run</button>
       <button class="an-copy-sel">Copy selection</button>
       <button class="an-copy-all">Copy all</button>
       <button class="an-close">Close</button>
@@ -819,6 +821,18 @@ export async function openAnalyze(block) {
   const saveBtn = root.querySelector(".an-save");
   const discardBtn = root.querySelector(".an-discard");
   let editStamp = "", eol = "\n", original = "", savedOnce = false;
+  // Run: the file is run by the active terminal (the viewer closes so you see it)
+  const runBtn = root.querySelector(".an-run");
+  const runWith = (detail) => { document.dispatchEvent(new CustomEvent("digterm-run", { detail })); };
+  if (block.importPath && block.importText === undefined) {
+    invoke("path_info", { cwd: null, names: [block.importPath] }).then(([info]) => {
+      const q = (p) => `'${p.replaceAll("'", "'\\''")}'`;
+      if (info?.kind && runCommand(info.path, info.exec, /Windows/i.test(navigator.userAgent), q)) {
+        runBtn.hidden = false;
+        runBtn.onclick = () => { if (dirty()) return unsavedNote(); close(); runWith({ path: info.path, exec: info.exec }); };
+      }
+    }).catch(() => {});
+  }
   const editing = () => !editor.hidden;
   const dirty = () => editing() && editor.value !== original;
   const unsavedNote = () => { matchesEl.textContent = "Unsaved changes: press Save or Discard first"; };
@@ -1072,6 +1086,7 @@ export async function openAnalyze(block) {
     }
     if (hiddenCount()) items.push([`Show all hidden text (${hiddenCount()})`, () => { hidden.clear(); refreshHidden(); }]);
     const native = nativeSelText();
+    if (native && runnableSelection(native)) items.push(["Run selection in terminal", () => { close(); runWith({ text: native }); }]);
     if (native) items.push(["Copy selection", () => copyText(btn, async () => native)]);
     else if (tsel) items.push(["Copy selection", () => copyText(btn, tselText)]);
     else if (sel) items.push(["Copy selection", () => copyText(btn, () => textFor(sel[0], sel[1] + 1))]);

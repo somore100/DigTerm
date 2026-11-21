@@ -810,6 +810,13 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
 // presets
 {
   {
+    const { runCommand, runnableSelection } = await import("../../src/runfile.js");
+    const q = (p) => `'${p}'`;
+    check(runCommand("/a/b.py", false, false, q) === "python3 '/a/b.py'" && runCommand("C:\\a\\b.py", false, true, q) === "python 'C:\\a\\b.py'", "python files run with python3 (python on Windows)");
+    check(runCommand("/a/tool", true, false, q) === "'/a/tool'" && runCommand("/a/notes.txt", false, false, q) === null && runCommand("/a/tool", true, true, q) === null, "an executable file runs as itself; plain text does not run");
+    check(runnableSelection("ls -la\n") === "ls -la" && runnableSelection("a\nb") === null && runnableSelection("   ") === null, "only one clean line of selected text can be run");
+  }
+  {
     // easy install: package names in install commands, typed (never run) with the right Ctrl key
     const { installCandidates, ARCHIVE } = await import("../../src/install.js");
     const one = installCandidates("Command 'htop' not found, but can be installed with: sudo dnf install htop");
