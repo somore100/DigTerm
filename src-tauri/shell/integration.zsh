@@ -17,3 +17,5 @@ add-zsh-hook preexec __dt_preexec
 add-zsh-hook precmd __dt_precmd
 # Digterm "folder" command: lists the folder. Digterm then keeps listing after each folder you open from the output.
 folder() { ls "$@"; }
+# Pasted text is not highlighted (see integration.bash)
+zle_highlight=('paste:none')

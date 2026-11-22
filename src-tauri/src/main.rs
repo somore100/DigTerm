@@ -113,6 +113,8 @@ struct Scanner {
     osc: Vec<u8>,
     cur: Option<(u32, u64, u64, u64)>, // id, output start, lines, command start
     b_pos: Option<u64>,
+    /// A prompt (marker A) was printed since the current command started: a new C then really is a new command.
+    prompt_seen: bool,
     t0: Option<Instant>,
     next_id: u32,
     started: Option<(u32, u64, u64)>, // id, command start, output start of the newest command not yet reported
@@ -144,7 +146,7 @@ fn new_token() -> String {
 
 impl Scanner {
     fn new() -> Self {
-        Scanner { st: St::Normal, esc_pos: 0, osc: Vec::new(), cur: None, b_pos: None, t0: None, next_id: 1, started: None, token: None }
+        Scanner { st: St::Normal, esc_pos: 0, osc: Vec::new(), cur: None, b_pos: None, prompt_seen: false, t0: None, next_id: 1, started: None, token: None }
     }
 
     fn with_token(token: String) -> Self {
@@ -217,8 +219,15 @@ impl Scanner {
             return;
         }
         match rest.first() {
+            Some(b'A') => self.prompt_seen = true,
             Some(b'B') => self.b_pos = Some(end_pos),
             Some(b'C') => {
+                // Several commands pasted at once: bash prints a C for each one but only one D at the end (no prompt in between).
+                // They stay one block, with the whole pasted text as its command.
+                if self.cur.is_some() && !self.prompt_seen {
+                    return;
+                }
+                self.prompt_seen = false;
                 let cmd_start = self.b_pos.take().unwrap_or(end_pos);
                 self.cur = Some((self.next_id, end_pos, 0, cmd_start));
                 self.started = Some((self.next_id, cmd_start, end_pos));
@@ -2167,6 +2176,23 @@ mod tests {
         assert_eq!(lines, 2);
         assert_eq!(&data[start as usize..end as usize], b"a\nb\n");
         assert_eq!(&data[cmd_start as usize..start as usize - C.len()], b"ls\r\n");
+    }
+
+    #[test]
+    fn scanner_keeps_commands_pasted_together_as_one_block() {
+        // bash prints a C marker for every pasted command, but only one D at the end
+        let data = cat(&[A, b"$ ", B, b"echo 1\r\necho 2\r\n", C, b"1\n", C, b"2\n", C, b"3\n", &d("0")]);
+        let rows = scan(&data, data.len());
+        assert_eq!(rows.len(), 1, "one block for the whole paste");
+        let (_, cmd_start, start, end, lines, _, exit) = rows[0];
+        assert_eq!(lines, 3, "output of all commands is counted");
+        assert_eq!(exit, Some(0));
+        assert!(data[cmd_start as usize..start as usize].starts_with(b"echo 1"), "the command text is the pasted text");
+        assert!(data[start as usize..end as usize].windows(1).any(|w| w == b"3"), "the range reaches the last output");
+        // a prompt in between means the earlier command was lost: the next C is a new command
+        let lost = cat(&[A, b"$ ", B, b"a\r\n", C, b"x\n", A, b"$ ", B, b"b\r\n", C, b"y\n", &d("0")]);
+        assert_eq!(scan(&lost, lost.len()).len(), 1);
+        assert_eq!(scan(&lost, lost.len())[0].0, 2);
     }
 
     #[test]

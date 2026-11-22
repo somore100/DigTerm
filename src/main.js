@@ -202,6 +202,8 @@ function openTarget(pane, info, action) {
   pane.term.focus();
 }
 
+const BG_AFTER_MS = 10000; // a command running longer than this is a background task
+
 // Run: types a command into the active terminal and enters it. Only from an explicit click on Run.
 function runInTerminal({ path, exec, text }) {
   const pane = activePane;
@@ -252,10 +254,17 @@ class Pane {
     zoomBtn.onclick = (e) => { e.stopPropagation(); toggleZoomPane(this); };
     this.el.append(this.termEl, zoomBtn, close);
 
+    // the pane's part of the Commands panel: background tasks (running over 10 s) above the list of commands
+    this.listEl = document.createElement("div");
+    this.listEl.hidden = true;
+    this.bgTitle = Object.assign(document.createElement("h3"), { className: "bg-title", textContent: "Background", title: "Commands that have been running for more than 10 seconds" });
+    this.bgEl = document.createElement("ul");
+    this.bgEl.className = "block-list bg-list";
+    this.bgTitle.hidden = true;
     this.blocksEl = document.createElement("ul");
     this.blocksEl.className = "block-list";
-    this.blocksEl.hidden = true;
-    $("block-lists").append(this.blocksEl);
+    this.listEl.append(this.bgTitle, this.bgEl, this.blocksEl);
+    $("block-lists").append(this.listEl);
 
     tab.grid.append(this.el);
     tab.panes.push(this);
@@ -575,7 +584,7 @@ class Pane {
     if (this.pickBoxes[i]) this.pickBoxes[i].checked = on;
   }
 
-  // A command whose output has started: shown in the list with a live timer until its finished block arrives.
+// A command whose output has started: shown in the list with a live timer until its finished block arrives.
   startRunning(b) {
     if (this.doneId >= b.id) return; // already finished (a start note can arrive after a very quick command)
     if (this.running) {
@@ -606,7 +615,9 @@ class Pane {
     };
     li.append(info, follow);
     this.blocksEl.append(li);
-    this.running = { li, id: b.id, timer: setInterval(tick, 500), reveal: setTimeout(() => { li.hidden = false; }, 400) };
+    // a command that runs longer than 10 s is a background task: it moves to its own list so it does not sit among the finished commands
+    const toBackground = () => { li.hidden = false; li.classList.add("bg"); this.bgEl.append(li); this.bgTitle.hidden = false; };
+    this.running = { li, id: b.id, timer: setInterval(tick, 500), reveal: setTimeout(() => { li.hidden = false; }, 400), bg: setTimeout(toBackground, BG_AFTER_MS) };
     if (prefs.newestBottom) scrollBlocksToEnd();
   }
 
@@ -614,8 +625,10 @@ class Pane {
     if (!this.running) return;
     clearInterval(this.running.timer);
     clearTimeout(this.running.reveal);
+    clearTimeout(this.running.bg);
     this.running.li.remove();
     this.running = null;
+    this.bgTitle.hidden = !this.bgEl.children.length;
   }
 
   // Run commands one after another: each is sent when the previous one has finished (after an optional delay).
@@ -806,7 +819,7 @@ class Pane {
     this.clearRunning();
     this.term.dispose();
     this.el.remove();
-    this.blocksEl.remove();
+    this.listEl.remove();
   }
 }
 
@@ -920,7 +933,7 @@ function focusPane(pane) {
   activeTab = pane.tab;
   pane.tab.last = pane;
   for (const p of panes.values()) p.el.classList.toggle("focused", p === pane);
-  for (const t of tabs) for (const p of t.panes) p.blocksEl.hidden = p !== pane;
+  for (const t of tabs) for (const p of t.panes) p.listEl.hidden = p !== pane;
   scrollBlocksToEnd();
   updateMultiBar();
   pane.term.focus();

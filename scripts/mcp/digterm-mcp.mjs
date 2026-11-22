@@ -88,7 +88,7 @@ export function scanFile(file) {
   const blocks = [];
   try {
     const buf = Buffer.alloc(1 << 20);
-    let st = 0, escPos = 0, osc = [], bPos = null, cur = null, nextId = 1, offset = 0;
+    let st = 0, escPos = 0, osc = [], bPos = null, cur = null, promptSeen = false, nextId = 1, offset = 0;
     for (;;) {
       const n = src.read(buf, 0, buf.length, offset);
       if (n === 0) break;
@@ -108,8 +108,13 @@ export function scanFile(file) {
       const s = Buffer.from(osc).toString("latin1");
       if (!s.startsWith("133;")) return;
       const rest = s.slice(4);
-      if (rest[0] === "B") bPos = endPos;
-      else if (rest[0] === "C") { cur = { id: nextId++, cmdStart: bPos ?? endPos, start: endPos }; bPos = null; }
+      if (rest[0] === "A") promptSeen = true;
+      else if (rest[0] === "B") bPos = endPos;
+      else if (rest[0] === "C") {
+        if (cur && !promptSeen) return; // several commands pasted at once: one block (same rule as the app)
+        promptSeen = false;
+        cur = { id: nextId++, cmdStart: bPos ?? endPos, start: endPos }; bPos = null;
+      }
       else if (rest[0] === "D" && cur) {
         const exit = parseInt(rest.slice(2).split(";")[0], 10);
         blocks.push({ ...cur, end: escPos, exit: Number.isNaN(exit) ? null : exit });

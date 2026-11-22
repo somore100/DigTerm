@@ -20,7 +20,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); f
 body { display: flex; flex-direction: column; }
 #main { flex: 1; min-height: 0; display: flex; }
 #stage { flex: 1; min-width: 0; position: relative; }
-#blocks { width: var(--panel-w); flex-shrink: 0; overflow-y: auto; background: var(--bg3); border-left: 1px solid var(--line); padding: 8px; box-sizing: border-box; }
+#blocks { width: var(--panel-w); flex-shrink: 0; overflow-y: auto; background: var(--bg3); border-left: 1px solid var(--line); padding: 8px 8px 8px 20px; box-sizing: border-box; }
 #blocks h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.6; }
 #block-lists .block-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column-reverse; gap: 6px; }
 #block-lists.newest-bottom .block-list { flex-direction: column; }
@@ -139,7 +139,8 @@ mark.w-note { color: var(--note-fg); background: var(--note-bg); }
 .findbar button.on { border-color: #3584e4; }
 
 #main { position: relative; }
-#blocks-toggle { position: absolute; top: 50%; right: var(--panel-w); z-index: 6; width: 16px; height: 52px; margin-top: -26px; padding: 0; font-size: 16px; line-height: 52px; color: inherit; background: var(--bg2); border: 1px solid var(--line); border-right: none; border-radius: 8px 0 0 8px; cursor: pointer; opacity: 0.7; }
+/* inside the Commands panel (not over the terminal and its scrollbar), above everything else */
+#blocks-toggle { position: absolute; top: 50%; right: calc(var(--panel-w) - 18px); z-index: 60; width: 18px; height: 52px; margin-top: -26px; padding: 0; font-size: 16px; line-height: 52px; color: inherit; background: var(--bg2); border: 1px solid var(--line); border-right: none; border-radius: 8px 0 0 8px; cursor: pointer; opacity: 0.7; }
 #blocks-toggle:hover { opacity: 1; background: var(--btn); }
 #main.cmd-hidden #blocks { display: none; }
 #main.cmd-hidden #blocks-toggle { right: 0; }
@@ -246,6 +247,9 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 .fb .fb-preview pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; max-height: 180px; overflow-y: auto; user-select: text; -webkit-user-select: text; }
 .fb .fb-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 
+#block-lists .bg-title { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--rep-fg); }
+#block-lists .bg-list { margin-bottom: 10px !important; flex-direction: column !important; }
+#block-lists .bg-list li { border-style: dashed; border-color: var(--rep-fg); }
 #block-lists .block-list li.running { opacity: 0.85; }
 #block-lists .running-label { color: var(--rep-fg); }
 #block-lists .block-list li[hidden] { display: none; }

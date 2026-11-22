@@ -14,3 +14,6 @@ PS1='\[\e]133;A;'"$__dt_tok"'\a\]'"$PS1"'\[\e]133;B;'"$__dt_tok"'\a\]'
 PS0=$'\e]133;C;'"$__dt_tok"$'\a'"$PS0"
 # Digterm "folder" command: lists the folder. Digterm then keeps listing after each folder you open from the output.
 folder() { ls "$@"; }
+# Pasted text is not highlighted in reverse video: when a paste is longer than the screen the shell redraws it with relative
+# cursor moves, which leaves stray highlighted bands behind in the scrollback.
+bind 'set enable-active-region off' 2>/dev/null
