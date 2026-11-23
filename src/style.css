@@ -330,3 +330,5 @@ table.dict td:not(:first-child):hover { background: var(--hover); }
 .an-md th { background: var(--bg3); }
 .an-md .md-link { color: var(--focus); text-decoration: underline; cursor: pointer; }
 .an-md hr { border: none; border-top: 1px solid var(--line2); }
+
+.bg-mem { display: block; font-size: 11px; opacity: 0.75; }

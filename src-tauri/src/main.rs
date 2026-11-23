@@ -592,6 +592,74 @@ fn pty_cwd(state: State<'_, AppState>, id: u32) -> Option<String> {
     }
 }
 
+/// Parent pid and command name from the text of /proc/<pid>/stat (the name sits in parentheses and may contain spaces).
+fn parse_stat(s: &str) -> Option<(u32, String)> {
+    let open = s.find('(')?;
+    let close = s.rfind(')')?;
+    let ppid = s.get(close + 1..)?.split_whitespace().nth(1)?.parse().ok()?;
+    Some((ppid, s.get(open + 1..close)?.to_string()))
+}
+
+#[derive(Serialize, Default)]
+struct Usage {
+    /// Resident memory of everything the shell started (kB), the number of those processes, and the biggest one.
+    mem_kb: u64,
+    procs: u32,
+    top_name: String,
+    top_kb: u64,
+}
+
+/// Memory used by the programs running inside a terminal (Linux only): the shell's child processes, all levels.
+#[tauri::command]
+fn pty_usage(state: State<'_, AppState>, id: u32) -> Usage {
+    let pid = match state.sessions.lock().unwrap().get(&id).and_then(|s| s.pid) {
+        Some(p) => p,
+        None => return Usage::default(),
+    };
+    #[cfg(target_os = "linux")]
+    {
+        let mut all: HashMap<u32, (u32, String)> = HashMap::new();
+        if let Ok(rd) = fs::read_dir("/proc") {
+            for e in rd.flatten() {
+                if let Some(n) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) {
+                    if let Some(x) = fs::read_to_string(format!("/proc/{n}/stat")).ok().and_then(|t| parse_stat(&t)) {
+                        all.insert(n, x);
+                    }
+                }
+            }
+        }
+        let mut mine = vec![pid];
+        let mut i = 0;
+        while i < mine.len() {
+            let cur = mine[i];
+            i += 1;
+            for (k, (pp, _)) in &all {
+                if *pp == cur && !mine.contains(k) {
+                    mine.push(*k);
+                }
+            }
+        }
+        let mut u = Usage::default();
+        for k in mine.into_iter().skip(1) {
+            let kb = fs::read_to_string(format!("/proc/{k}/status")).ok().and_then(|t| {
+                t.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+            }).unwrap_or(0);
+            u.mem_kb += kb;
+            u.procs += 1;
+            if kb >= u.top_kb {
+                u.top_kb = kb;
+                u.top_name = all.get(&k).map(|x| x.1.clone()).unwrap_or_default();
+            }
+        }
+        return u;
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        Usage::default()
+    }
+}
+
 #[derive(Serialize)]
 struct PathInfo {
     /// "dir", "text" (a file that looks like text), "file" (anything else) or "" (does not exist).
@@ -2210,7 +2278,7 @@ fn main() {
     }
     let app = tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, autoclean, autocompress, drop_empty_runs, is_isolated, open_isolated, clear_temp, list_archive, clear_unpacked, delete_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, pty_usage, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, autoclean, autocompress, drop_empty_runs, is_isolated, open_isolated, clear_temp, list_archive, clear_unpacked, delete_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
         .build(tauri::generate_context!())
         .expect("error while building Digterm");
     app.run(|app, event| {
@@ -2222,6 +2290,13 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_stat_handles_names_with_spaces_and_parens() {
+        assert_eq!(parse_stat("42 (bash) S 7 42 42 0 -1"), Some((7, "bash".into())));
+        assert_eq!(parse_stat("43 (Web Content (x)) S 42 1 1 0"), Some((42, "Web Content (x)".into())));
+        assert_eq!(parse_stat("garbage"), None);
+    }
+
     use super::*;
 
     const A: &[u8] = b"\x1b]133;A\x07";

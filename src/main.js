@@ -631,7 +631,21 @@ class Pane {
     li.append(info, follow);
     this.blocksEl.append(li);
     // a command that runs longer than 10 s is a background task: it moves to its own list so it does not sit among the finished commands
-    const toBackground = () => { li.hidden = false; li.classList.add("bg"); this.bgEl.append(li); this.bgTitle.hidden = false; };
+    const mem = Object.assign(document.createElement("span"), { className: "bg-mem" });
+    let memTimer = null;
+    const pollMem = async () => {
+      try {
+        const u = await invoke("pty_usage", { id: this.id });
+        if (u && u.procs) mem.textContent = `${formatKb(u.mem_kb)} · ${u.procs} process${u.procs > 1 ? "es" : ""} · biggest: ${u.top_name} ${formatKb(u.top_kb)}`;
+      } catch {}
+    };
+    const toBackground = () => {
+      li.hidden = false; li.classList.add("bg"); this.bgEl.append(li); this.bgTitle.hidden = false;
+      info.append(mem);
+      pollMem();
+      memTimer = setInterval(pollMem, 2000);
+      if (this.running) this.running.memTimer = memTimer;
+    };
     this.running = { li, id: b.id, timer: setInterval(tick, 500), reveal: setTimeout(() => { li.hidden = false; }, 400), bg: setTimeout(toBackground, BG_AFTER_MS) };
     if (prefs.newestBottom) scrollBlocksToEnd();
   }
@@ -641,6 +655,7 @@ class Pane {
     clearInterval(this.running.timer);
     clearTimeout(this.running.reveal);
     clearTimeout(this.running.bg);
+    clearInterval(this.running.memTimer);
     this.running.li.remove();
     this.running = null;
     this.bgTitle.hidden = !this.bgEl.children.length;
@@ -836,6 +851,10 @@ class Pane {
     this.el.remove();
     this.listEl.remove();
   }
+}
+
+function formatKb(kb) {
+  return kb >= 1048576 ? `${(kb / 1048576).toFixed(1)} GB` : kb >= 1024 ? `${Math.round(kb / 1024)} MB` : `${kb} kB`;
 }
 
 function formatDuration(ms) {
