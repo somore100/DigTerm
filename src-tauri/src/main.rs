@@ -22,6 +22,8 @@ struct Session {
     run_path: PathBuf,
     pid: Option<u32>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// Temporary tab: its run file is not part of History and is deleted when the tab closes.
+    temp: bool,
 }
 
 #[derive(Default)]
@@ -304,13 +306,15 @@ fn pty_spawn(
     rows: u16,
     cols: u16,
     cwd: Option<String>,
+    temp: Option<bool>,
 ) -> Result<Spawned, String> {
+    let temp = temp.unwrap_or(false);
     let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
 
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = data_dir(&app)?;
     let shell_dir = data_dir.join("shell");
     fs::create_dir_all(&shell_dir).map_err(|e| e.to_string())?;
 
@@ -346,7 +350,8 @@ fn pty_spawn(
         }
     });
 
-    let runs_dir = data_dir.join("runs");
+    // a temporary tab keeps its output in tmp/<process id>/, which History never lists
+    let runs_dir = if temp { data_dir.join("tmp").join(std::process::id().to_string()) } else { data_dir.join("runs") };
     create_private_dir(&data_dir).map_err(|e| e.to_string())?;
     create_private_dir(&runs_dir).map_err(|e| e.to_string())?;
     let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -355,7 +360,7 @@ fn pty_spawn(
 
     state.sessions.lock().unwrap().insert(
         id,
-        Session { input, master: pair.master, run_path: path.clone(), pid, killer },
+        Session { input, master: pair.master, run_path: path.clone(), pid, killer, temp },
     );
 
     std::thread::spawn(move || {
@@ -474,13 +479,84 @@ fn run_is_empty(path: &Path) -> bool {
     !any && !data.windows(5).any(|w| w == b"133;C")
 }
 
+/// Set when started with `--isolated`: all data (history, saved tabs, runs) lives in a temporary folder
+/// that is removed when the app exits, so nothing is read from or left in the normal data folder.
+static ISOLATED: OnceLock<PathBuf> = OnceLock::new();
+
+/// The folder for runs, layout and cache: the normal app data folder, or the temporary one when isolated.
+fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(p) = ISOLATED.get() {
+        return Ok(p.clone());
+    }
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn is_isolated() -> bool {
+    ISOLATED.get().is_some()
+}
+
+/// Opens another Digterm window that starts from scratch and saves nothing.
+#[tauri::command]
+fn open_isolated() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--isolated");
+    spawn_detached(cmd)
+}
+
+/// Removes the output of temporary tabs left by earlier runs that ended without closing them.
+/// Folders of processes that are still running (other windows) are kept.
+#[tauri::command]
+fn clear_temp(app: AppHandle) {
+    let Ok(dir) = data_dir(&app) else { return };
+    let Ok(rd) = fs::read_dir(dir.join("tmp")) else { return };
+    let me = std::process::id().to_string();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name == me {
+            continue;
+        }
+        #[cfg(target_os = "linux")]
+        let stale = !Path::new("/proc").join(&name).exists();
+        #[cfg(not(target_os = "linux"))]
+        let stale = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(false, |d| d.as_secs() > 86400);
+        if stale {
+            let _ = fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// Deletes what this process keeps only for the moment: the isolated folder, or the temporary tabs' output.
+fn cleanup_on_exit(app: &AppHandle) {
+    if let Some(p) = ISOLATED.get() {
+        let _ = fs::remove_dir_all(p);
+    } else if let Ok(dir) = data_dir(app) {
+        let _ = fs::remove_dir_all(dir.join("tmp").join(std::process::id().to_string()));
+    }
+}
+
+/// Isolated folders of windows that ended without cleaning up (a crash) are removed at start.
+#[cfg(target_os = "linux")]
+fn sweep_isolated() {
+    let Ok(rd) = fs::read_dir(std::env::temp_dir()) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if let Some(pid) = name.strip_prefix("digterm-isolated-") {
+            if pid.chars().all(|c| c.is_ascii_digit()) && !Path::new("/proc").join(pid).exists() {
+                let _ = fs::remove_dir_all(e.path());
+            }
+        }
+    }
+}
+
 /// Ends a session: kills its shell and forgets it. The run file stays on disk,
 /// unless no command was ever run in it (then it would only clutter History).
 #[tauri::command]
 fn pty_close(state: State<'_, AppState>, id: u32) {
     if let Some(mut session) = state.sessions.lock().unwrap().remove(&id) {
         let _ = session.killer.kill();
-        if run_is_empty(&session.run_path) {
+        if session.temp || run_is_empty(&session.run_path) {
             let _ = fs::remove_file(&session.run_path);
         }
     }
@@ -886,7 +962,7 @@ async fn write_text_file(path: String, text: String, stamp: String) -> Result<St
 
 #[tauri::command]
 fn save_layout(app: AppHandle, json: String) -> Result<(), String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     create_private_dir(&dir).map_err(|e| e.to_string())?;
     create_private(&dir.join("layout.json"), false)
         .and_then(|mut f| f.write_all(json.as_bytes()))
@@ -895,7 +971,7 @@ fn save_layout(app: AppHandle, json: String) -> Result<(), String> {
 
 #[tauri::command]
 fn load_layout(app: AppHandle) -> Result<Option<String>, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = data_dir(&app)?;
     Ok(fs::read_to_string(dir.join("layout.json")).ok())
 }
 
@@ -928,7 +1004,7 @@ fn is_run_name(name: &str) -> bool {
 
 /// Saved output files (`run-*.raw` and `run-*.raw.gz`) as (path, size, age in seconds).
 fn run_files(app: &AppHandle) -> Result<Vec<(PathBuf, u64, u64)>, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("runs");
+    let dir = data_dir(&app)?.join("runs");
     let Ok(rd) = fs::read_dir(dir) else { return Ok(Vec::new()) };
     let now = SystemTime::now();
     let mut out = Vec::new();
@@ -1064,7 +1140,7 @@ fn run_path_by_name(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
     if !is_run_name(name) || name.contains('/') || name.contains('\\') {
         return Err("not a saved output file".into());
     }
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("runs").join(name))
+    Ok(data_dir(&app)?.join("runs").join(name))
 }
 
 /// Compresses `src` into `dst` (gzip). `dst` must not exist yet.
@@ -1092,7 +1168,7 @@ fn plain_run_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
     if !name.ends_with(".gz") {
         return Ok(path);
     }
-    let cache = app.path().app_data_dir().map_err(|e| e.to_string())?.join("cache");
+    let cache = data_dir(&app)?.join("cache");
     create_private_dir(&cache).map_err(|e| e.to_string())?;
     let out = cache.join(name.trim_end_matches(".gz"));
     if out.exists() {
@@ -1111,7 +1187,7 @@ fn plain_run_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
 /// Empties the folder of unpacked copies (called once when the app starts).
 #[tauri::command]
 fn clear_unpacked(app: AppHandle) {
-    if let Ok(dir) = app.path().app_data_dir() {
+    if let Ok(dir) = data_dir(&app) {
         let _ = fs::remove_dir_all(dir.join("cache"));
     }
 }
@@ -1379,7 +1455,7 @@ async fn analyze_open_ranges(state: State<'_, AppState>, session: u32, ranges: V
 /// Analyzes text pasted by the user (for example a log copied from another terminal).
 #[tauri::command]
 async fn analyze_open_text(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<u64, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("imports");
+    let dir = data_dir(&app)?.join("imports");
     create_private_dir(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("last-paste.txt");
     create_private(&path, false).and_then(|mut f| f.write_all(text.as_bytes())).map_err(|e| e.to_string())?;
@@ -2110,6 +2186,14 @@ fn startup_open() -> Option<String> {
 
 fn main() {
     resolve_startup();
+    if std::env::args().skip(1).any(|a| a == "--isolated") {
+        #[cfg(target_os = "linux")]
+        sweep_isolated();
+        let p = std::env::temp_dir().join(format!("digterm-isolated-{}", std::process::id()));
+        if create_private_dir(&p).is_ok() {
+            let _ = ISOLATED.set(p);
+        }
+    }
     // WebKitGTK can leave ghost copies of the page while the window is dragged or resized under
     // native Wayland (seen on Fedora). Running through XWayland and disabling its GPU compositing
     // avoids that. Any value you set yourself (for example GDK_BACKEND=wayland) is respected.
@@ -2124,11 +2208,16 @@ fn main() {
             }
         }
     }
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, autoclean, autocompress, drop_empty_runs, list_archive, clear_unpacked, delete_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
-        .run(tauri::generate_context!())
-        .expect("error while running Digterm");
+        .invoke_handler(tauri::generate_handler![startup_open, pty_spawn, pty_write, pty_resize, pty_close, pty_cwd, path_info, open_path, open_url, open_mailto, system_info, read_text_file, write_text_file, session_len, analyze_extend, home_dir, save_layout, load_layout, runs_usage, cleanup_runs, autoclean, autocompress, drop_empty_runs, is_isolated, open_isolated, clear_temp, list_archive, clear_unpacked, delete_runs, list_runs, scan_run, analyze_open_run, analyze_open_ranges, analyze_severity, read_block, analyze_open, analyze_open_text, analyze_open_file, analyze_lines, analyze_lengths, analyze_groups, analyze_patterns, analyze_pattern_lines, analyze_search])
+        .build(tauri::generate_context!())
+        .expect("error while building Digterm");
+    app.run(|app, event| {
+        if let tauri::RunEvent::Exit = event {
+            cleanup_on_exit(app);
+        }
+    });
 }
 
 #[cfg(test)]

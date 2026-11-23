@@ -748,6 +748,23 @@ check(document.querySelectorAll(".tab-btn").length >= 2, "new tab shortcut opens
   check(typed.length === 2 && typed.every(([, a]) => a.data === "\x15ls -la"), `a type-it button types the text without Enter, every time: got ${JSON.stringify(typed)}`);
 }
 
+// temporary tab: not saved, no history
+{
+  const tabBtns = () => [...document.querySelectorAll("#tabs .tab-btn")];
+  const n0 = tabBtns().length;
+  document.getElementById("menu-btn").click();
+  [...menu.querySelectorAll("button")].find((b) => /New temporary tab/.test(b.textContent))?.click();
+  await wait(150);
+  const spawn = [...globalThis.__calls].reverse().find(([c]) => c === "pty_spawn");
+  check(spawn?.[1].temp === true, "a temporary tab asks the backend for output that is not kept");
+  check(tabBtns().length === n0 + 1 && /◌/.test(tabBtns().at(-1).textContent), "the temporary tab is marked");
+  const saved = [...globalThis.__calls].reverse().find(([c]) => c === "save_layout");
+  check(!saved || JSON.parse(saved[1].json).tabs.length <= n0, "the temporary tab is left out of the saved tabs");
+  check(!!document.getElementById("pick-all"), "the Commands panel has Select all");
+  tabBtns().at(-1).querySelector("button").click();
+  await wait(50);
+}
+
 // output triggers
 {
   const T = await import("../../src/triggers.js");

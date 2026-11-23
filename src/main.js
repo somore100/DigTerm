@@ -26,6 +26,20 @@ import feedbackConfig from "../feedback.json"; // {to, endpoint}: the relay addr
 
 const $ = (id) => document.getElementById(id);
 
+// Isolated window (started with --isolated): starts from scratch and saves nothing. Settings, buttons and the like
+// are kept only in memory, and the backend keeps history and layout in a temporary folder that is removed on exit.
+const ISOLATED = await invoke("is_isolated").catch(() => false);
+if (ISOLATED) {
+  const mem = new Map();
+  Storage.prototype.getItem = (k) => (mem.has(String(k)) ? mem.get(String(k)) : null);
+  Storage.prototype.setItem = (k, v) => { mem.set(String(k), String(v)); };
+  Storage.prototype.removeItem = (k) => { mem.delete(String(k)); };
+  Storage.prototype.clear = () => mem.clear();
+  document.body.classList.add("isolated");
+  document.title = "Digterm (isolated)";
+  getCurrentWindow().setTitle("Digterm (isolated: nothing is saved)").catch(() => {});
+}
+
 // ---------------------------------------------------------------- preferences
 
 const FONT_DEFAULT = 14;
@@ -389,6 +403,7 @@ class Pane {
       rows: this.term.rows,
       cols: this.term.cols,
       cwd: this.cwd,
+      temp: !!this.tab.temp,
     });
     this.id = info.id;
     this.runFile = info.run_file;
@@ -858,6 +873,7 @@ function analyzeSelected(pane) {
 
 function updateMultiBar() {
   const n = activePane?.picked.size ?? 0;
+  $("pick-all").checked = n > 0 && n === activePane.blocks.length;
   $("multi-bar").hidden = n === 0;
   $("analyze-selected").textContent = `Analyze ${n} selected`;
   $("compare-selected").hidden = n !== 2;
@@ -878,6 +894,11 @@ async function compareSelected(pane) {
   } catch (e) { toast(String(e), 3500); }
 }
 $("compare-selected").onclick = () => activePane && compareSelected(activePane);
+$("pick-all").onchange = (e) => {
+  if (!activePane) return;
+  activePane.blocks.forEach((_, i) => activePane.setPicked(i, e.target.checked));
+  updateMultiBar();
+};
 $("analyze-selected").onclick = () => activePane && analyzeSelected(activePane);
 $("clear-selected").onclick = () => {
   if (!activePane) return;
@@ -1011,8 +1032,10 @@ function createTab() {
   return tab;
 }
 
-async function newTab(cwd, font) {
+async function newTab(cwd, font, temp = false) {
   const tab = createTab();
+  tab.temp = temp; // a temporary tab is not saved: not in the restored tabs, and its output is deleted when it closes
+  renderTabBar(true);
   await addPane(tab, cwd, font);
   return tab;
 }
@@ -1085,7 +1108,7 @@ const tabTitle = (tab) => fmtPath(tab.panes[0]?.cwd, prefs.tabTitle);
 
 let lastBar = "";
 function renderTabBar(force = false) {
-  const sig = JSON.stringify(tabs.map((t) => [tabTitle(t), t === activeTab, t.panes.some((p) => p.alert)]));
+  const sig = JSON.stringify(tabs.map((t) => [tabTitle(t), t === activeTab, t.panes.some((p) => p.alert), !!t.temp]));
   if (!force && sig === lastBar) return;
   lastBar = sig;
   const host = $("tabs");
@@ -1096,7 +1119,8 @@ function renderTabBar(force = false) {
     b.className = "tab-btn" + (tab === activeTab ? " active" : "");
     b.title = fmtPath(tab.panes[0]?.cwd, "full");
     const title = document.createElement("span");
-    title.textContent = (tab.panes.some((p) => p.alert) ? "● " : "") + tabTitle(tab);
+    title.textContent = (tab.panes.some((p) => p.alert) ? "● " : "") + (tab.temp ? "◌ " : "") + tabTitle(tab);
+    if (tab.temp) title.title = "Temporary tab: not saved, its output is deleted when it closes";
     const x = document.createElement("button");
     x.textContent = "✕";
     x.onclick = (e) => { e.stopPropagation(); closeTab(tab); };
@@ -1889,7 +1913,8 @@ function showHistory() {
     HIST_RANGES.forEach(([l], i) => rangeSel.add(new Option(l, i)));
     const all = document.createElement("input");
     all.type = "checkbox";
-    all.title = "Select everything shown";
+    const allLabel = Object.assign(document.createElement("label"), { className: "an-toggle", title: "Select everything shown" });
+    allLabel.append(all, " Select all");
     const compactBox = document.createElement("input");
     compactBox.type = "checkbox";
     compactBox.checked = prefs.histCompact;
@@ -1908,7 +1933,7 @@ function showHistory() {
     const clear = mk("Clear history", "Deletes the saved output of all closed terminals; open terminals are kept");
     const bar = document.createElement("div");
     bar.className = "hist-bar";
-    bar.append(all, sortSel, rangeSel, compactLabel, emptyLabel, count, copySel, delSel, clear);
+    bar.append(allLabel, sortSel, rangeSel, compactLabel, emptyLabel, count, copySel, delSel, clear);
     const list = document.createElement("div");
     list.className = "history";
     body.append(note, bar, list);
@@ -2150,6 +2175,8 @@ function renderMenu() {
   };
   const sep = () => menu.append(document.createElement("hr"));
   item("New tab", "newTab", () => newTab(activePane?.cwd));
+  item("New temporary tab (nothing saved)", null, () => newTab(activePane?.cwd, undefined, true));
+  if (!ISOLATED) item("New isolated window (starts from scratch, saves nothing)", null, () => invoke("open_isolated").catch((e) => toast(String(e), 4000)));
   item("Split pane", "splitPane", splitActive);
   item("Zoom this pane", "zoomPane", () => toggleZoomPane());
   item("Show open tabs", "overview", () => toggleOverview(true));
@@ -2188,8 +2215,8 @@ $("overview-btn").onclick = () => toggleOverview();
 let lastSaved = "";
 async function persist() {
   const data = {
-    active: Math.max(0, tabs.indexOf(activeTab)),
-    tabs: tabs.map((t) => ({ panes: t.panes.map((p) => ({ cwd: p.cwd, font: p.font, manual: p.manual })) })),
+    active: Math.max(0, tabs.filter((t) => !t.temp).indexOf(activeTab)),
+    tabs: tabs.filter((t) => !t.temp).map((t) => ({ panes: t.panes.map((p) => ({ cwd: p.cwd, font: p.font, manual: p.manual })) })),
   };
   const json = JSON.stringify(data);
   if (json === lastSaved) return;
@@ -2232,6 +2259,7 @@ applyCommandOrder();
 if (prefs.alwaysOnTop) getCurrentWindow().setAlwaysOnTop(true).catch(() => {});
 renderLaunchers();
 invoke("clear_unpacked").catch(() => {});
+invoke("clear_temp").catch(() => {}); // output of temporary tabs from windows that ended without closing them
 invoke("drop_empty_runs").catch(() => {}); // saved sessions in which no command was run // unpacked copies of compressed history from the last run
 runCleanup().catch(() => {});
 setInterval(() => runCleanup().catch(() => {}), 60000);

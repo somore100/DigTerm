@@ -68,7 +68,7 @@ mark.w-note { color: var(--note-fg); background: var(--note-bg); }
 .tab-btn.active { background: var(--sel); border-color: var(--sel-line); }
 .tab-btn button { font-size: 11px; color: inherit; opacity: 0.55; background: transparent; border: none; cursor: pointer; border-radius: 4px; }
 .tab-btn button:hover { opacity: 1; background: var(--hover); }
-#menu { position: fixed; top: 38px; right: 6px; z-index: 30; min-width: 240px; padding: 6px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 8px 24px #0008; font-size: 13px; }
+#menu { position: fixed; top: 38px; right: 6px; z-index: 70; max-height: calc(100vh - 46px); overflow-y: auto; min-width: 240px; padding: 6px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 8px 24px #0008; font-size: 13px; }
 #menu[hidden] { display: none; }
 #menu button { display: flex; justify-content: space-between; width: 100%; text-align: left; }
 #menu kbd { opacity: 0.5; font-size: 11px; font-family: inherit; }
@@ -247,6 +247,9 @@ button, .tab-btn, .ov-card, .theme-btn { cursor: pointer; }
 .fb .fb-preview pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; max-height: 180px; overflow-y: auto; user-select: text; -webkit-user-select: text; }
 .fb .fb-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 
+#block-lists > div[hidden] { display: none; } /* the list of a terminal that is not shown */
+#pick-all-label { display: flex; align-items: center; gap: 4px; margin: 0 0 8px; font-size: 12px; cursor: pointer; }
+body.isolated #tabbar::before { content: "isolated · nothing is saved"; font-size: 11px; padding: 1px 8px; margin-right: 6px; border-radius: 8px; background: #8250df; color: #fff; white-space: nowrap; }
 #block-lists .bg-title { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--rep-fg); }
 #block-lists .bg-list { margin-bottom: 10px !important; flex-direction: column !important; }
 #block-lists .bg-list li { border-style: dashed; border-color: var(--rep-fg); }
