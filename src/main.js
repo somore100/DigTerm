@@ -2204,6 +2204,8 @@ function showFeedback() {
 
 const menu = $("menu");
 
+const menuOpen = new Set(); // which menu sections are unfolded
+
 function renderMenu() {
   menu.replaceChildren();
   const themeRow = document.createElement("div");
@@ -2232,6 +2234,7 @@ function renderMenu() {
     document.createElement("hr"),
   );
 
+  let target = menu;
   const item = (label, shortcutId, fn) => {
     const b = document.createElement("button");
     const l = document.createElement("span");
@@ -2239,37 +2242,61 @@ function renderMenu() {
     b.append(l);
     if (shortcutId) b.append(Object.assign(document.createElement("kbd"), { textContent: labelFor(shortcutId) }));
     b.onclick = () => { menu.hidden = true; fn(); };
-    menu.append(b);
+    target.append(b);
   };
   const sep = () => menu.append(document.createElement("hr"));
+  // a folding section: the header toggles it, and it stays open or closed while the app runs
+  const group = (title, build) => {
+    const head = document.createElement("button");
+    const box = document.createElement("div");
+    box.className = "menu-group";
+    const mark = () => { head.firstChild.textContent = `${menuOpen.has(title) ? "▾" : "▸"} ${title}`; box.hidden = !menuOpen.has(title); };
+    head.append(document.createElement("span"));
+    head.onclick = (e) => { e.stopPropagation(); menuOpen.has(title) ? menuOpen.delete(title) : menuOpen.add(title); mark(); };
+    menu.append(head, box);
+    target = box;
+    build();
+    target = menu;
+    mark();
+  };
   item("New tab", "newTab", () => newTab(activePane?.cwd));
-  item("New temporary tab (nothing saved)", null, () => newTab(activePane?.cwd, undefined, true));
-  if (!ISOLATED) item("New isolated window (starts from scratch, saves nothing)", null, () => invoke("open_isolated").catch((e) => toast(String(e), 4000)));
   item("Split pane", "splitPane", splitActive);
   item("Zoom this pane", "zoomPane", () => toggleZoomPane());
   item("Show open tabs", "overview", () => toggleOverview(true));
-  sep();
   item("Find in terminal", "find", () => activePane?.toggleFind(true));
   item(prefs.commandsHidden ? "Show command list" : "Hide command list", "commands", () => setCommandsHidden(!prefs.commandsHidden));
-  item("Analyze full output of this terminal", null, () => analyzeFull(activePane));
-  item("Analyze pasted text…", "analyzeText", showPasteDialog);
-  item("History of earlier sessions…", null, showHistory);
-  item("Add to queue (runs after the current command)…", "queueAdd", showQueueDialog);
-  item("Run commands one by one…", null, showBatchDialog);
-  item((prefs.buttonsShown ? "✓ " : "") + "Colour buttons panel", null, () => setButtonsShown(!prefs.buttonsShown));
-  item("Presets (read-only checks)…", null, showPresets);
-  item("Output triggers…", null, showTriggers);
-  item("Linux / Windows commands…", null, showCommandDictionary);
+  item("Add to queue…", "queueAdd", showQueueDialog);
   sep();
-  item("Fullscreen", "fullscreen", toggleFullscreen);
-  item((prefs.alwaysOnTop ? "✓ " : "") + "Always on top", null, () => setAlwaysOnTop(!prefs.alwaysOnTop));
+  group("More tabs and windows", () => {
+    item("New temporary tab (nothing saved)", null, () => newTab(activePane?.cwd, undefined, true));
+    if (!ISOLATED) item("New isolated window (starts from scratch, saves nothing)", null, () => invoke("open_isolated").catch((e) => toast(String(e), 4000)));
+  });
+  group("Analyze and history", () => {
+    item("Analyze full output of this terminal", null, () => analyzeFull(activePane));
+    item("Analyze pasted text…", "analyzeText", showPasteDialog);
+    item("History of earlier sessions…", null, showHistory);
+  });
+  group("Run and automate", () => {
+    item("Run commands one by one…", null, showBatchDialog);
+    item((prefs.buttonsShown ? "✓ " : "") + "Colour buttons panel", null, () => setButtonsShown(!prefs.buttonsShown));
+    item("Presets (read-only checks)…", null, showPresets);
+    item("Output triggers…", null, showTriggers);
+  });
+  group("Window", () => {
+    item("Fullscreen", "fullscreen", toggleFullscreen);
+    item((prefs.alwaysOnTop ? "✓ " : "") + "Always on top", null, () => setAlwaysOnTop(!prefs.alwaysOnTop));
+  });
+  group("Help", () => {
+    item("Linux / Windows commands…", null, showCommandDictionary);
+    item("Keyboard shortcuts", "shortcuts", showShortcuts);
+    item("Leave feedback…", null, showFeedback);
+    item("About Digterm", null, showAbout);
+  });
   sep();
   item("Preferences", "prefs", showPreferences);
-  item("Keyboard shortcuts", "shortcuts", showShortcuts);
-  item("Leave feedback…", null, showFeedback);
-  item("About Digterm", null, showAbout);
 }
 
+$("queue-btn").onclick = () => showQueueDialog();
 $("menu-btn").onclick = (e) => { e.stopPropagation(); if (menu.hidden) renderMenu(); menu.hidden = !menu.hidden; };
 document.addEventListener("click", (e) => {
   if (!menu.contains(e.target)) menu.hidden = true;
