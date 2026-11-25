@@ -662,7 +662,7 @@ class Pane {
   }
 
   // Run commands one after another: each is sent when the previous one has finished (after an optional delay).
-  startQueue(lines, delayMs, stop, startText) {
+  startQueue(lines, delayMs, stop, startText, waiting = false) {
     this.cancelQueue();
     const q = (this.queue = { lines, sent: 0, stop, timer: 0, started: false, bar: document.createElement("div"), label: document.createElement("span") });
     q.bar.className = "queue-bar";
@@ -671,6 +671,12 @@ class Pane {
     cancel.onclick = () => this.cancelQueue("Queue cancelled");
     q.bar.append(q.label, cancel);
     this.el.append(q.bar);
+    if (waiting) { // a command is running: the first queued command is sent when it finishes (queueAfter)
+      q.started = true;
+      q.label.textContent = `Waiting: ${lines.length} queued`;
+      q.bar.title = lines.join("\n");
+      return;
+    }
     const go = () => {
       if (this.queue !== q) return;
       if (this.running || this.id === null) return this.cancelQueue("Queue cancelled: a command is still running");
@@ -681,6 +687,19 @@ class Pane {
       q.label.textContent = `${lines.length} commands, ${startText}`;
       q.timer = setTimeout(go, delayMs);
     } else go();
+  }
+  // Add commands to run after the current one (and anything already queued) in this terminal.
+  enqueue(lines, stop) {
+    if (this.id === null) return;
+    const q = this.queue;
+    if (q) {
+      q.lines.push(...lines);
+      q.label.textContent = q.started && q.sent ? `Running ${q.sent} of ${q.lines.length}` : `Waiting: ${q.lines.length} queued`;
+      q.bar.title = q.lines.slice(q.sent).join("\n");
+      return toast(`Added ${lines.length} to the queue`, 2500);
+    }
+    if (!this.running) return this.startQueue(lines, 0, stop, ""); // nothing is running: start right away
+    this.startQueue(lines, 0, stop, "", true);
   }
   sendQueued() {
     const q = this.queue;
@@ -1302,6 +1321,7 @@ const ACTIONS = [
   { id: "copy", label: "Copy selection", combo: "Ctrl+Shift+C" },
   { id: "find", label: "Find in terminal", combo: "Ctrl+Shift+F" },
   { id: "analyzeText", label: "Analyze pasted text", combo: "Ctrl+Shift+L" },
+  { id: "queueAdd", label: "Add commands to the queue", combo: "Ctrl+Shift+E" },
   { id: "commands", label: "Show or hide command list", combo: "Ctrl+Shift+B" },
   { id: "zoomIn", label: "Zoom in", combo: "Ctrl+=" },
   { id: "zoomOut", label: "Zoom out", combo: "Ctrl+-" },
@@ -1353,6 +1373,7 @@ function runAction(id) {
       return false; // nothing selected: let the key through
     }
     case "analyzeText": showPasteDialog(); return true;
+    case "queueAdd": showQueueDialog(); return true;
     case "commands": setCommandsHidden(!prefs.commandsHidden); return true;
     case "find": if (activePane) activePane.toggleFind(true); return true;
     case "zoomIn": if (analyzeOpen) return false; setPaneFont(activePane, (activePane?.font ?? prefs.font) + 1); return true;
@@ -1643,6 +1664,34 @@ function showCommandDictionary() {
     body.append(q, table, note);
     render();
     q.focus();
+  });
+}
+
+function showQueueDialog() {
+  if (!activePane || activePane.id === null) return toast("Open a terminal first");
+  const pane = activePane;
+  openDialog("Add to queue", (body) => {
+    const area = document.createElement("textarea");
+    area.placeholder = "One command per line. They run in this terminal after the current command and anything already queued.";
+    area.rows = 6;
+    area.className = "batch-area";
+    const stop = document.createElement("input");
+    stop.type = "checkbox";
+    const go = Object.assign(document.createElement("button"), { textContent: "Add to queue" });
+    const warn = document.createElement("div");
+    warn.className = "warn";
+    go.onclick = () => {
+      const lines = parseLines(area.value);
+      if (!lines.length) return void (warn.textContent = "Type at least one command.");
+      closeDialog();
+      pane.enqueue(lines, stop.checked);
+    };
+    body.append(area, opt("Stop the queue if a command fails", stop), warn, go);
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = pane.running ? "A command is running here: these start when it finishes." : "Nothing is running here, so the first one starts now.";
+    body.append(note);
+    area.focus();
   });
 }
 
@@ -2205,6 +2254,7 @@ function renderMenu() {
   item("Analyze full output of this terminal", null, () => analyzeFull(activePane));
   item("Analyze pasted text…", "analyzeText", showPasteDialog);
   item("History of earlier sessions…", null, showHistory);
+  item("Add to queue (runs after the current command)…", "queueAdd", showQueueDialog);
   item("Run commands one by one…", null, showBatchDialog);
   item((prefs.buttonsShown ? "✓ " : "") + "Colour buttons panel", null, () => setButtonsShown(!prefs.buttonsShown));
   item("Presets (read-only checks)…", null, showPresets);
